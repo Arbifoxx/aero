@@ -79,8 +79,9 @@ use super::shader_cache::{
 use super::strip_to_list::{StreamEvent, StripTopology};
 use super::tessellation::TessellationRuntime;
 use super::vertex_pulling::{
-    VertexPullingDrawParams, VertexPullingLayout, VertexPullingSlot, VERTEX_PULLING_GROUP,
-    VERTEX_PULLING_UNIFORM_BINDING, VERTEX_PULLING_VERTEX_BUFFER_BINDING_BASE,
+    bind_empty_groups_before_vertex_pulling, VertexPullingDrawParams, VertexPullingLayout,
+    VertexPullingSlot, VERTEX_PULLING_GROUP, VERTEX_PULLING_UNIFORM_BINDING,
+    VERTEX_PULLING_VERTEX_BUFFER_BINDING_BASE,
 };
 
 const DEFAULT_MAX_VERTEX_SLOTS: usize = MAX_INPUT_SLOTS as usize;
@@ -6828,7 +6829,6 @@ impl AerogpuD3d11Executor {
                 dummy_storage_texture_views: &self.dummy_storage_texture_views,
                 dummy_texture_view_2d: &self.dummy_texture_view_2d,
                 dummy_texture_view_2d_array: &self.dummy_texture_view_2d_array,
-                dummy_storage_texture_views: &self.dummy_storage_texture_views,
                 default_sampler: &self.default_sampler,
                 stage: ShaderStage::Geometry,
                 stage_state: stage_bindings,
@@ -10828,7 +10828,6 @@ impl AerogpuD3d11Executor {
                     dummy_storage_texture_views: &self.dummy_storage_texture_views,
                     dummy_texture_view_2d: &self.dummy_texture_view_2d,
                     dummy_texture_view_2d_array: &self.dummy_texture_view_2d_array,
-                    dummy_storage_texture_views: &self.dummy_storage_texture_views,
                     default_sampler: &self.default_sampler,
                     stage: ShaderStage::Vertex,
                     stage_state: stage_bindings,
