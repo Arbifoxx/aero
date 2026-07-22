@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::{HashMap, VecDeque},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -327,12 +326,12 @@ async fn run_session_inner(
                     close_reason,
                 } = close;
                 if let Some(wire) = error_wire {
-                    let _ = ws_sender.send(Message::Binary(wire)).await;
+                    let _ = ws_sender.send(Message::Binary(wire.into())).await;
                 }
                 let _ = ws_sender
                     .send(Message::Close(Some(CloseFrame {
                         code: close_code,
-                        reason: Cow::Owned(close_reason),
+                        reason: close_reason.into(),
                     })))
                     .await;
                 break;
@@ -514,7 +513,7 @@ async fn run_session_inner(
                                             &state.l2_limits,
                                         ) {
                                             if let Err(exceeded) =
-                                                send_ws_message(&ws_out_tx, Message::Binary(pong), &mut quotas).await
+                                                send_ws_message(&ws_out_tx, Message::Binary(pong.into()), &mut quotas).await
                                             {
                                                 exceeded.record_metrics(&state.metrics);
                                                 close_handshake = true;
@@ -616,7 +615,7 @@ async fn run_session_inner(
                         &state.l2_limits,
                     ) {
                         if let Err(exceeded) =
-                            send_ws_message(&ws_out_tx, Message::Binary(wire), &mut quotas).await
+                            send_ws_message(&ws_out_tx, Message::Binary(wire.into()), &mut quotas).await
                         {
                             exceeded.record_metrics(&state.metrics);
                             close_handshake = true;
@@ -805,7 +804,7 @@ async fn process_actions(
                     capture.record_proxy_to_guest(ts_out, &frame).await;
                 }
                 if let Err(exceeded) =
-                    send_ws_message(ws_out_tx, Message::Binary(wire), quotas).await
+                    send_ws_message(ws_out_tx, Message::Binary(wire.into()), quotas).await
                 {
                     exceeded.record_metrics(&state.metrics);
                     request_close_with_error(
@@ -1260,7 +1259,7 @@ mod tests {
         // Fill the channel so `ws_out_tx.send(...)` would block without the timeout in
         // `close_with_error`.
         ws_out_tx
-            .send(Message::Text("block".to_string()))
+            .send(Message::Text("block".into()))
             .await
             .unwrap();
 
@@ -1287,7 +1286,7 @@ mod tests {
     async fn close_shutting_down_does_not_hang_when_ws_channel_full() {
         let (ws_out_tx, _ws_out_rx) = mpsc::channel::<Message>(1);
         ws_out_tx
-            .send(Message::Text("block".to_string()))
+            .send(Message::Text("block".into()))
             .await
             .unwrap();
 
@@ -1303,7 +1302,7 @@ mod tests {
     async fn close_policy_violation_does_not_hang_when_ws_channel_full() {
         let (ws_out_tx, _ws_out_rx) = mpsc::channel::<Message>(1);
         ws_out_tx
-            .send(Message::Text("block".to_string()))
+            .send(Message::Text("block".into()))
             .await
             .unwrap();
 
@@ -1319,7 +1318,7 @@ mod tests {
     async fn send_ws_message_returns_backpressure_when_ws_channel_full() {
         let (ws_out_tx, _ws_out_rx) = mpsc::channel::<Message>(1);
         ws_out_tx
-            .send(Message::Text("block".to_string()))
+            .send(Message::Text("block".into()))
             .await
             .unwrap();
 
