@@ -398,7 +398,7 @@ impl GenCtx {
     }
 
     fn pick_any_value(&self, rng: &mut impl Rng) -> (ValueId, Width) {
-        let idx = rng.gen_range(0..self.values.len());
+        let idx = rng.random_range(0..self.values.len());
         self.values[idx]
     }
 
@@ -411,7 +411,7 @@ impl GenCtx {
                 continue;
             }
             seen += 1;
-            if rng.gen_range(0..seen) == 0 {
+            if rng.random_range(0..seen) == 0 {
                 chosen = Some(*id);
             }
         }
@@ -423,11 +423,11 @@ impl GenCtx {
             return v;
         }
         // Ensure progress even if the generator forgot to seed something.
-        self.const_int(width, rng.gen())
+        self.const_int(width, rng.random())
     }
 
     fn pick_safe_addr(&self, rng: &mut impl Rng) -> ValueId {
-        self.addr_values[rng.gen_range(0..self.addr_values.len())]
+        self.addr_values[rng.random_range(0..self.addr_values.len())]
     }
 
     fn pick_w8(&mut self, rng: &mut impl Rng) -> ValueId {
@@ -436,7 +436,7 @@ impl GenCtx {
 }
 
 fn random_width(rng: &mut impl Rng) -> Width {
-    match rng.gen_range(0..4u8) {
+    match rng.random_range(0..4u8) {
         0 => Width::W8,
         1 => Width::W16,
         2 => Width::W32,
@@ -446,11 +446,11 @@ fn random_width(rng: &mut impl Rng) -> Width {
 }
 
 fn random_gpr(rng: &mut impl Rng) -> Gpr {
-    Gpr::from_u4(rng.gen_range(0..16)).unwrap()
+    Gpr::from_u4(rng.random_range(0..16)).unwrap()
 }
 
 fn random_flag(rng: &mut impl Rng) -> Flag {
-    match rng.gen_range(0..6u8) {
+    match rng.random_range(0..6u8) {
         0 => Flag::Cf,
         1 => Flag::Pf,
         2 => Flag::Af,
@@ -462,7 +462,7 @@ fn random_flag(rng: &mut impl Rng) -> Flag {
 }
 
 fn random_cond(rng: &mut impl Rng) -> Cond {
-    match rng.gen_range(0..16u8) {
+    match rng.random_range(0..16u8) {
         0 => Cond::O,
         1 => Cond::No,
         2 => Cond::B,
@@ -484,7 +484,7 @@ fn random_cond(rng: &mut impl Rng) -> Cond {
 }
 
 fn random_binop(rng: &mut impl Rng) -> BinOp {
-    match rng.gen_range(0..8u8) {
+    match rng.random_range(0..8u8) {
         0 => BinOp::Add,
         1 => BinOp::Sub,
         2 => BinOp::And,
@@ -534,7 +534,7 @@ fn random_ir_block(rng: &mut impl Rng, entry_rip: u64) -> IrBlock {
         if !ctx.can_add(1) {
             break;
         }
-        ctx.const_int(w, rng.gen());
+        ctx.const_int(w, rng.random());
     }
 
     // Seed a few safe memory addresses (safe for 8-byte loads/stores).
@@ -543,7 +543,7 @@ fn random_ir_block(rng: &mut impl Rng, entry_rip: u64) -> IrBlock {
         if !ctx.can_add(1) {
             break;
         }
-        let addr = rng.gen_range(RAM_WINDOW_BASE..=addr_max);
+        let addr = rng.random_range(RAM_WINDOW_BASE..=addr_max);
         let v = ctx.const_int(Width::W64, addr);
         ctx.addr_values.push(v);
     }
@@ -553,14 +553,14 @@ fn random_ir_block(rng: &mut impl Rng, entry_rip: u64) -> IrBlock {
         // MAX_IR_INSTS is very small).
         let have_addrs = !ctx.addr_values.is_empty();
 
-        let choice: u8 = rng.gen_range(0..100);
+        let choice: u8 = rng.random_range(0..100);
         if choice < 8 {
             // Const
             if !ctx.can_add(1) {
                 break;
             }
             let w = random_width(rng);
-            ctx.const_int(w, rng.gen());
+            ctx.const_int(w, rng.random());
         } else if choice < 18 {
             // ReadReg (GPR/Flag)
             if !ctx.can_add(1) {
@@ -603,13 +603,13 @@ fn random_ir_block(rng: &mut impl Rng, entry_rip: u64) -> IrBlock {
                         Width::W16
                     }
                 }
-                Width::W32 => match rng.gen_range(0..3u8) {
+                Width::W32 => match rng.random_range(0..3u8) {
                     0 => Width::W8,
                     1 => Width::W16,
                     2 => Width::W32,
                     _ => unreachable!(),
                 },
-                Width::W64 => match rng.gen_range(0..4u8) {
+                Width::W64 => match rng.random_range(0..4u8) {
                     0 => Width::W8,
                     1 => Width::W16,
                     2 => Width::W32,
@@ -686,24 +686,24 @@ fn random_ir_block(rng: &mut impl Rng, entry_rip: u64) -> IrBlock {
     }
 
     // Random-ish terminator without inserting new values.
-    let term_choice: u8 = rng.gen_range(0..100);
+    let term_choice: u8 = rng.random_range(0..100);
     let term = if term_choice < 50 {
         IrTerminator::Jump {
-            target: entry_rip.wrapping_add(rng.gen_range(0..0x1000u64)),
+            target: entry_rip.wrapping_add(rng.random_range(0..0x1000u64)),
         }
     } else if term_choice < 80 {
         let cond = ctx.pick_w8(rng);
         IrTerminator::CondJump {
             cond,
-            target: entry_rip.wrapping_add(rng.gen_range(0..0x1000u64)),
-            fallthrough: entry_rip.wrapping_add(rng.gen_range(0..0x1000u64)),
+            target: entry_rip.wrapping_add(rng.random_range(0..0x1000u64)),
+            fallthrough: entry_rip.wrapping_add(rng.random_range(0..0x1000u64)),
         }
     } else if term_choice < 95 {
         let (v, _w) = ctx.pick_any_value(rng);
         IrTerminator::IndirectJump { target: v }
     } else {
         IrTerminator::ExitToInterpreter {
-            next_rip: entry_rip.wrapping_add(rng.gen_range(0..0x1000u64)),
+            next_rip: entry_rip.wrapping_add(rng.random_range(0..0x1000u64)),
         }
     };
 
@@ -781,7 +781,7 @@ fn random_cpu_state(rng: &mut impl Rng, entry_rip: u64) -> CpuState {
     };
 
     for slot in &mut cpu.gpr {
-        *slot = rng.gen();
+        *slot = rng.random();
     }
 
     cpu.set_rflags(rng.gen::<u64>() | abi::RFLAGS_RESERVED1);

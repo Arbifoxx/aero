@@ -3952,7 +3952,7 @@ fn tier2_loop_trace_cross_page_store_bumps_both_pages_interpreter_matches_wasm()
 mod random_traces {
     use super::*;
 
-    use rand::{seq::SliceRandom, Rng, RngCore, SeedableRng};
+    use rand::{seq::IndexedRandom, Rng, RngCore, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
     use aero_jit_x86::tier2::interp::run_trace;
@@ -3966,13 +3966,13 @@ mod random_traces {
         let mut state = T2State::default();
 
         for reg in ALL_GPRS {
-            state.cpu.gpr[reg.as_u8() as usize] = rng.gen();
+            state.cpu.gpr[reg.as_u8() as usize] = rng.random();
         }
 
         state.cpu.rip = 0x1000;
         state.cpu.rflags = abi::RFLAGS_RESERVED1;
         for flag in [Flag::Cf, Flag::Pf, Flag::Af, Flag::Zf, Flag::Sf, Flag::Of] {
-            if rng.gen() {
+            if rng.random() {
                 state.cpu.rflags |= 1u64 << flag.rflags_bit();
             }
         }
@@ -3981,10 +3981,10 @@ mod random_traces {
     }
 
     fn gen_operand(rng: &mut ChaCha8Rng, values: &[ValueId]) -> Operand {
-        if !values.is_empty() && rng.gen_bool(0.7) {
-            Operand::Value(values[rng.gen_range(0..values.len())])
+        if !values.is_empty() && rng.random_bool(0.7) {
+            Operand::Value(values[rng.random_range(0..values.len())])
         } else {
-            Operand::Const(rng.gen())
+            Operand::Const(rng.random())
         }
     }
 
@@ -3996,7 +3996,7 @@ mod random_traces {
         let mut next_value: u32 = 0;
         let mut values: Vec<ValueId> = Vec::new();
         let mut safe_addrs: Vec<ValueId> = Vec::new();
-        let kind = if rng.gen_bool(0.25) {
+        let kind = if rng.random_bool(0.25) {
             TraceKind::Loop
         } else {
             TraceKind::Linear
@@ -4008,12 +4008,12 @@ mod random_traces {
 
         // Add a small number of code-version guards in the prologue (matching the real trace
         // builder and satisfying Tier-2 IR verifier invariants for linear traces).
-        if !code_versions.is_empty() && rng.gen_bool(0.35) {
+        if !code_versions.is_empty() && rng.random_bool(0.35) {
             let table_len = code_versions.len() as u64;
-            let guard_count = if rng.gen_bool(0.15) { 2 } else { 1 };
+            let guard_count = if rng.random_bool(0.15) { 2 } else { 1 };
             for _ in 0..guard_count {
-                let page = rng.gen_range(0..table_len);
-                let expected = if rng.gen_bool(0.8) {
+                let page = rng.random_range(0..table_len);
+                let expected = if rng.random_bool(0.8) {
                     code_versions[page as usize]
                 } else {
                     code_versions[page as usize].wrapping_add(1)
@@ -4029,26 +4029,26 @@ mod random_traces {
 
         // Seed at least one safe, in-bounds address value sometimes so memory ops can use
         // `Operand::Value` addresses (exercise value-local address plumbing).
-        if rng.gen_bool(0.5) {
+        if rng.random_bool(0.5) {
             let dst = v(next_value);
             next_value += 1;
-            let value = rng.gen_range(0..=(GUEST_MEM_SIZE - 8)) as u64;
+            let value = rng.random_range(0..=(GUEST_MEM_SIZE - 8)) as u64;
             prologue.push(Instr::Const { dst, value });
             values.push(dst);
             safe_addrs.push(dst);
         }
 
         while body.len() < instr_count {
-            match rng.gen_range(0..100u32) {
+            match rng.random_range(0..100u32) {
                 0..=15 => {
                     let dst = v(next_value);
                     next_value += 1;
-                    let value = if rng.gen_bool(0.25) {
+                    let value = if rng.random_bool(0.25) {
                         // Bias towards generating some in-bounds addresses we can safely use for
                         // any load/store width.
-                        rng.gen_range(0..=(GUEST_MEM_SIZE - 8)) as u64
+                        rng.random_range(0..=(GUEST_MEM_SIZE - 8)) as u64
                     } else {
-                        rng.gen()
+                        rng.random()
                     };
                     body.push(Instr::Const { dst, value });
                     values.push(dst);
@@ -4069,7 +4069,7 @@ mod random_traces {
                     }
                     let dst = v(next_value);
                     next_value += 1;
-                    let op = match rng.gen_range(0..11u32) {
+                    let op = match rng.random_range(0..11u32) {
                         0 => BinOp::Add,
                         1 => BinOp::Sub,
                         2 => BinOp::Mul,
@@ -4084,7 +4084,7 @@ mod random_traces {
                     };
                     let lhs = gen_operand(rng, &values);
                     let rhs = gen_operand(rng, &values);
-                    let flags = if rng.gen_bool(0.3) {
+                    let flags = if rng.random_bool(0.3) {
                         FlagSet::ALU
                     } else {
                         FlagSet::EMPTY
@@ -4122,10 +4122,10 @@ mod random_traces {
                         .choose(rng)
                         .unwrap();
                     let bytes = width.bytes();
-                    let addr = if !safe_addrs.is_empty() && rng.gen_bool(0.6) {
+                    let addr = if !safe_addrs.is_empty() && rng.random_bool(0.6) {
                         Operand::Value(*safe_addrs.choose(rng).unwrap())
                     } else {
-                        Operand::Const(rng.gen_range(0..(GUEST_MEM_SIZE - bytes)) as u64)
+                        Operand::Const(rng.random_range(0..(GUEST_MEM_SIZE - bytes)) as u64)
                     };
                     body.push(Instr::LoadMem { dst, addr, width });
                     values.push(dst);
@@ -4140,10 +4140,10 @@ mod random_traces {
                         .choose(rng)
                         .unwrap();
                     let bytes = width.bytes();
-                    let addr = if !safe_addrs.is_empty() && rng.gen_bool(0.6) {
+                    let addr = if !safe_addrs.is_empty() && rng.random_bool(0.6) {
                         Operand::Value(*safe_addrs.choose(rng).unwrap())
                     } else {
-                        Operand::Const(rng.gen_range(0..(GUEST_MEM_SIZE - bytes)) as u64)
+                        Operand::Const(rng.random_range(0..(GUEST_MEM_SIZE - bytes)) as u64)
                     };
                     let src = gen_operand(rng, &values);
                     body.push(Instr::StoreMem { addr, src, width });
@@ -4161,7 +4161,7 @@ mod random_traces {
                     // Directly set a random subset of flags.
                     let mut mask = FlagSet::EMPTY;
                     for flag in [Flag::Cf, Flag::Pf, Flag::Af, Flag::Zf, Flag::Sf, Flag::Of] {
-                        if rng.gen_bool(0.5) {
+                        if rng.random_bool(0.5) {
                             mask = mask.union(flag_to_set(flag));
                         }
                     }
@@ -4171,19 +4171,19 @@ mod random_traces {
                     body.push(Instr::SetFlags {
                         mask,
                         values: FlagValues {
-                            cf: rng.gen(),
-                            pf: rng.gen(),
-                            af: rng.gen(),
-                            zf: rng.gen(),
-                            sf: rng.gen(),
-                            of: rng.gen(),
+                            cf: rng.random(),
+                            pf: rng.random(),
+                            af: rng.random(),
+                            zf: rng.random(),
+                            sf: rng.random(),
+                            of: rng.random(),
                         },
                     });
                 }
                 93..=95 => {
                     // Conditional guard (side exit).
                     let cond = gen_operand(rng, &values);
-                    let expected = rng.gen_bool(0.5);
+                    let expected = rng.random_bool(0.5);
                     let exit_rip = 0x2000u64 + (rng.gen::<u16>() as u64);
                     body.push(Instr::Guard {
                         cond,
@@ -4205,18 +4205,18 @@ mod random_traces {
         // Add an extra code-version guard sometimes, so we cover both:
         // - success path (fallthrough to return/side-exit)
         // - invalidation path (guard mismatch).
-        if rng.gen_bool(0.2) {
+        if rng.random_bool(0.2) {
             let table_len = code_versions.len() as u64;
             let page = if table_len != 0 {
-                rng.gen_range(0..table_len)
+                rng.random_range(0..table_len)
             } else {
                 0
             };
-            let expected = if table_len != 0 && rng.gen_bool(0.7) {
+            let expected = if table_len != 0 && rng.random_bool(0.7) {
                 code_versions[page as usize]
             } else if table_len != 0 {
                 code_versions[page as usize].wrapping_add(1)
-            } else if rng.gen_bool(0.7) {
+            } else if rng.random_bool(0.7) {
                 0
             } else {
                 1
@@ -4234,7 +4234,7 @@ mod random_traces {
         //
         // Loop traces must terminate (the WASM trace executes an actual `loop {}`), so always end
         // them with a side exit.
-        if kind == TraceKind::Loop || rng.gen_bool(0.25) {
+        if kind == TraceKind::Loop || rng.random_bool(0.25) {
             let exit_rip = 0x2000u64 + (rng.gen::<u16>() as u64);
             body.push(Instr::SideExit { exit_rip });
         }
@@ -4270,7 +4270,7 @@ mod random_traces {
             let env = RuntimeEnv::default();
             // Install a small code-version table so random traces can exercise
             // `Instr::GuardCodeVersion` both in the interpreter and in WASM.
-            let mut code_versions: Vec<u32> = (0..8).map(|_| rng.gen()).collect();
+            let mut code_versions: Vec<u32> = (0..8).map(|_| rng.random()).collect();
             // Ensure at least one entry is non-zero so "guard success on non-zero" is possible.
             if code_versions.iter().all(|v| *v == 0) {
                 code_versions[0] = 1;
@@ -4279,7 +4279,7 @@ mod random_traces {
                 env.page_versions.set_version(page as u64, version);
             }
 
-            let instr_count = rng.gen_range(20..=50);
+            let instr_count = rng.random_range(20..=50);
             let trace = gen_random_trace(&mut rng, instr_count, &code_versions);
 
             let mut guest_mem_init = vec![0u8; GUEST_MEM_SIZE];
@@ -4361,7 +4361,7 @@ mod random_traces {
         let mut rng = ChaCha8Rng::seed_from_u64(0x5EED_C0DE);
         for i in 0..50 {
             let env = RuntimeEnv::default();
-            let mut code_versions: Vec<u32> = (0..8).map(|_| rng.gen()).collect();
+            let mut code_versions: Vec<u32> = (0..8).map(|_| rng.random()).collect();
             if code_versions.iter().all(|v| *v == 0) {
                 code_versions[0] = 1;
             }
@@ -4369,7 +4369,7 @@ mod random_traces {
                 env.page_versions.set_version(page as u64, version);
             }
 
-            let instr_count = rng.gen_range(20..=50);
+            let instr_count = rng.random_range(20..=50);
             let mut trace = gen_random_trace(&mut rng, instr_count, &code_versions);
 
             // Ensure at least one code-version guard so we actually exercise the inline table-read
@@ -4380,8 +4380,8 @@ mod random_traces {
                 .any(|i| matches!(i, Instr::GuardCodeVersion { .. }))
             {
                 let table_len = code_versions.len() as u64;
-                let page = rng.gen_range(0..table_len);
-                let expected = if rng.gen_bool(0.8) {
+                let page = rng.random_range(0..table_len);
+                let expected = if rng.random_bool(0.8) {
                     code_versions[page as usize]
                 } else {
                     code_versions[page as usize].wrapping_add(1)

@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use rand::{seq::SliceRandom, Rng, SeedableRng};
+use rand::{seq::IndexedRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use wasmi::{Caller, Engine, Func, Linker, Memory, MemoryType, Module, Store, TypedFunc};
 use wasmparser::Validator;
@@ -38,13 +38,13 @@ fn v(idx: u32) -> ValueId {
 fn make_random_state(rng: &mut ChaCha8Rng) -> T2State {
     let mut state = T2State::default();
     for reg in aero_jit_x86::tier2::ir::ALL_GPRS {
-        state.cpu.gpr[reg.as_u8() as usize] = rng.gen();
+        state.cpu.gpr[reg.as_u8() as usize] = rng.random();
     }
     state.cpu.rip = INIT_RIP;
     state.cpu.rflags = abi::RFLAGS_RESERVED1;
     // Randomize the Tier-2-observable flag subset.
     for flag in [Flag::Cf, Flag::Pf, Flag::Af, Flag::Zf, Flag::Sf, Flag::Of] {
-        if rng.gen() {
+        if rng.random() {
             state.cpu.rflags |= 1u64 << flag.rflags_bit();
         }
     }
@@ -52,10 +52,10 @@ fn make_random_state(rng: &mut ChaCha8Rng) -> T2State {
 }
 
 fn gen_operand(rng: &mut ChaCha8Rng, values: &[ValueId]) -> Operand {
-    if !values.is_empty() && rng.gen_bool(0.7) {
-        Operand::Value(values[rng.gen_range(0..values.len())])
+    if !values.is_empty() && rng.random_bool(0.7) {
+        Operand::Value(values[rng.random_range(0..values.len())])
     } else {
-        Operand::Const(rng.gen())
+        Operand::Const(rng.random())
     }
 }
 
@@ -69,7 +69,7 @@ fn safe_mem_addr(rng: &mut ChaCha8Rng, width: Width) -> u64 {
     let max = GUEST_MEM_SIZE
         .checked_sub(bytes)
         .expect("guest memory too small");
-    rng.gen_range(0..=max as u64)
+    rng.random_range(0..=max as u64)
 }
 
 fn gen_width(rng: &mut ChaCha8Rng) -> Width {
@@ -80,12 +80,12 @@ fn gen_width(rng: &mut ChaCha8Rng) -> Width {
 
 fn gen_flag_values(rng: &mut ChaCha8Rng) -> FlagValues {
     FlagValues {
-        cf: rng.gen(),
-        pf: rng.gen(),
-        af: rng.gen(),
-        zf: rng.gen(),
-        sf: rng.gen(),
-        of: rng.gen(),
+        cf: rng.random(),
+        pf: rng.random(),
+        af: rng.random(),
+        zf: rng.random(),
+        sf: rng.random(),
+        of: rng.random(),
     }
 }
 
@@ -96,12 +96,12 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
     let mut body: Vec<Instr> = Vec::new();
 
     for _ in 0..max_instrs {
-        match rng.gen_range(0..100u32) {
+        match rng.random_range(0..100u32) {
             // Constants.
             0..=12 => {
                 let dst = v(next_value);
                 next_value += 1;
-                let value = rng.gen();
+                let value = rng.random();
                 body.push(Instr::Const { dst, value });
                 values.push(dst);
             }
@@ -140,7 +140,7 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
                 }
                 let dst = v(next_value);
                 next_value += 1;
-                let op = match rng.gen_range(0..11u32) {
+                let op = match rng.random_range(0..11u32) {
                     0 => BinOp::Add,
                     1 => BinOp::Sub,
                     2 => BinOp::Mul,
@@ -155,7 +155,7 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
                 };
                 let lhs = gen_operand(rng, &values);
                 let rhs = gen_operand(rng, &values);
-                let flags = if rng.gen_bool(0.35) {
+                let flags = if rng.random_bool(0.35) {
                     FlagSet::ALU
                 } else {
                     FlagSet::EMPTY
@@ -189,8 +189,8 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
             // Memory store.
             75..=82 => {
                 let width = gen_width(rng);
-                let addr = if !addr_values.is_empty() && rng.gen_bool(0.7) {
-                    Operand::Value(addr_values[rng.gen_range(0..addr_values.len())])
+                let addr = if !addr_values.is_empty() && rng.random_bool(0.7) {
+                    Operand::Value(addr_values[rng.random_range(0..addr_values.len())])
                 } else {
                     Operand::Const(safe_mem_addr(rng, width))
                 };
@@ -202,8 +202,8 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
                 let dst = v(next_value);
                 next_value += 1;
                 let width = gen_width(rng);
-                let addr = if !addr_values.is_empty() && rng.gen_bool(0.7) {
-                    Operand::Value(addr_values[rng.gen_range(0..addr_values.len())])
+                let addr = if !addr_values.is_empty() && rng.random_bool(0.7) {
+                    Operand::Value(addr_values[rng.random_range(0..addr_values.len())])
                 } else {
                     Operand::Const(safe_mem_addr(rng, width))
                 };
@@ -214,12 +214,12 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
             91..=94 => {
                 let mut mask = FlagSet::EMPTY;
                 for (bit, set) in [
-                    (FlagSet::CF, rng.gen_bool(0.5)),
-                    (FlagSet::PF, rng.gen_bool(0.5)),
-                    (FlagSet::AF, rng.gen_bool(0.5)),
-                    (FlagSet::ZF, rng.gen_bool(0.5)),
-                    (FlagSet::SF, rng.gen_bool(0.5)),
-                    (FlagSet::OF, rng.gen_bool(0.5)),
+                    (FlagSet::CF, rng.random_bool(0.5)),
+                    (FlagSet::PF, rng.random_bool(0.5)),
+                    (FlagSet::AF, rng.random_bool(0.5)),
+                    (FlagSet::ZF, rng.random_bool(0.5)),
+                    (FlagSet::SF, rng.random_bool(0.5)),
+                    (FlagSet::OF, rng.random_bool(0.5)),
                 ] {
                     if set {
                         mask = mask.union(bit);
@@ -240,7 +240,7 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
                     continue;
                 }
                 let cond = gen_operand(rng, &values);
-                let expected = rng.gen();
+                let expected = rng.random();
                 let exit_rip = 0xDEAD_0000_0000_0000u64 | (rng.gen::<u16>() as u64);
                 body.push(Instr::Guard {
                     cond,
@@ -287,7 +287,7 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
     if !body
         .iter()
         .any(|i| matches!(i, Instr::LoadMem { .. } | Instr::StoreMem { .. }))
-        && rng.gen_bool(0.3)
+        && rng.random_bool(0.3)
     {
         let addr_val = v(next_value);
         next_value += 1;

@@ -103,19 +103,19 @@ fn assert_wasm_contains_op(wasm: &[u8], predicate: impl Fn(&Operator<'_>) -> boo
 }
 
 fn random_f32(rng: &mut impl Rng) -> f32 {
-    rng.gen_range(-1000.0f32..1000.0f32)
+    rng.random_range(-1000.0f32..1000.0f32)
 }
 
 fn random_f64(rng: &mut impl Rng) -> f64 {
-    rng.gen_range(-1000.0f64..1000.0f64)
+    rng.random_range(-1000.0f64..1000.0f64)
 }
 
 fn random_pos_f32(rng: &mut impl Rng) -> f32 {
-    rng.gen_range(0.01f32..1000.0f32)
+    rng.random_range(0.01f32..1000.0f32)
 }
 
 fn random_pos_f64(rng: &mut impl Rng) -> f64 {
-    rng.gen_range(0.01f64..1000.0f64)
+    rng.random_range(0.01f64..1000.0f64)
 }
 
 fn pack_f32x4(lanes: [f32; 4]) -> u128 {

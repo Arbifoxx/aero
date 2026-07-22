@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use rand::{seq::SliceRandom, Rng, SeedableRng};
+use rand::{seq::IndexedRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 mod tier1_common;
@@ -46,11 +46,11 @@ fn v(idx: u32) -> ValueId {
 fn make_random_state(rng: &mut ChaCha8Rng) -> T2State {
     let mut state = T2State::default();
     for r in ALL_REGS {
-        state.cpu.gpr[r.as_u8() as usize] = rng.gen();
+        state.cpu.gpr[r.as_u8() as usize] = rng.random();
     }
     state.cpu.rflags = aero_jit_x86::abi::RFLAGS_RESERVED1;
     for flag in [Flag::Cf, Flag::Pf, Flag::Af, Flag::Zf, Flag::Sf, Flag::Of] {
-        if rng.gen() {
+        if rng.random() {
             state.cpu.rflags |= 1u64 << flag.rflags_bit();
         }
     }
@@ -58,10 +58,10 @@ fn make_random_state(rng: &mut ChaCha8Rng) -> T2State {
 }
 
 fn gen_operand(rng: &mut ChaCha8Rng, values: &[ValueId]) -> Operand {
-    if !values.is_empty() && rng.gen_bool(0.7) {
-        Operand::Value(values[rng.gen_range(0..values.len())])
+    if !values.is_empty() && rng.random_bool(0.7) {
+        Operand::Value(values[rng.random_range(0..values.len())])
     } else {
-        Operand::Const(rng.gen())
+        Operand::Const(rng.random())
     }
 }
 
@@ -71,11 +71,11 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
     let mut body: Vec<Instr> = Vec::new();
 
     for _ in 0..max_instrs {
-        match rng.gen_range(0..100u32) {
+        match rng.random_range(0..100u32) {
             0..=15 => {
                 let dst = v(next_value);
                 next_value += 1;
-                let value = rng.gen();
+                let value = rng.random();
                 body.push(Instr::Const { dst, value });
                 values.push(dst);
             }
@@ -92,7 +92,7 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
                 }
                 let dst = v(next_value);
                 next_value += 1;
-                let op = match rng.gen_range(0..10u32) {
+                let op = match rng.random_range(0..10u32) {
                     0 => BinOp::Add,
                     1 => BinOp::Sub,
                     2 => BinOp::Mul,
@@ -106,7 +106,7 @@ fn gen_random_trace(rng: &mut ChaCha8Rng, max_instrs: usize) -> TraceIr {
                 };
                 let lhs = gen_operand(rng, &values);
                 let rhs = gen_operand(rng, &values);
-                let flags = if rng.gen_bool(0.3) {
+                let flags = if rng.random_bool(0.3) {
                     FlagSet::ALU
                 } else {
                     FlagSet::EMPTY
