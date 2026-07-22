@@ -1325,7 +1325,7 @@ mod tests {
         let mut quotas = SessionQuotas::new(0, 0);
         let err = tokio::time::timeout(
             Duration::from_secs(3),
-            send_ws_message(&ws_out_tx, Message::Text("next".to_string()), &mut quotas),
+            send_ws_message(&ws_out_tx, Message::Text("next".into()), &mut quotas),
         )
         .await
         .expect("send_ws_message should not hang when the outbound channel is full")
