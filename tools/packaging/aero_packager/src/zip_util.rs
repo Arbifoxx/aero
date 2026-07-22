@@ -19,7 +19,7 @@ pub fn write_deterministic_zip(
     dirs.sort();
 
     for dir in dirs {
-        let options = zip::write::FileOptions::default()
+        let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)
             .last_modified_time(mtime)
             .unix_permissions(0o755);
@@ -29,7 +29,7 @@ pub fn write_deterministic_zip(
     }
 
     for f in files {
-        let options = zip::write::FileOptions::default()
+        let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .compression_level(Some(9))
             .last_modified_time(mtime)
