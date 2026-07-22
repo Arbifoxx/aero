@@ -23,7 +23,7 @@ use axum::Router;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use rand::{distributions::Alphanumeric, Rng};
+use rand::distr::{Alphanumeric, Distribution};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -1145,8 +1145,8 @@ fn resolve_request_ranges(
 }
 
 fn make_boundary() -> String {
-    rand::thread_rng()
-        .sample_iter(&Alphanumeric)
+    Alphanumeric
+        .sample_iter(rand::rng())
         .take(32)
         .map(char::from)
         .collect()
