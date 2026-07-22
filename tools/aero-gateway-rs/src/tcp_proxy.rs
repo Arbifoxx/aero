@@ -5,6 +5,7 @@ use std::{
 
 use axum::{
     extract::{
+        rejection::ExtensionRejection,
         ws::{Message, WebSocket, WebSocketUpgrade},
         ConnectInfo, Query, State,
     },
@@ -28,12 +29,13 @@ pub struct TcpProxyQuery {
 
 pub async fn tcp_ws_handler(
     ws: WebSocketUpgrade,
+    connect_info: Result<ConnectInfo<SocketAddr>, ExtensionRejection>,
     State(state): State<AppState>,
     Query(query): Query<TcpProxyQuery>,
     headers: HeaderMap,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
 ) -> impl IntoResponse {
     let client_ip = connect_info
+        .ok()
         .map(|ConnectInfo(addr)| addr.ip())
         .or_else(|| x_forwarded_for(&headers));
 
@@ -135,7 +137,7 @@ async fn handle_tcp_ws(
             };
 
             if ws_sender
-                .send(Message::Binary(buf[..n].to_vec()))
+                .send(Message::Binary(buf[..n].to_vec().into()))
                 .await
                 .is_err()
             {
