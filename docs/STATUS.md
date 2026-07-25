@@ -1,6 +1,6 @@
 # macOS native status
 
-Validated on 2026-07-25, commit `4f9b19ac1` plus this working tree, ARM64 macOS 27.0 on Apple M1 Pro:
+Validated on 2026-07-25 at commit `383f8c760`, ARM64 macOS 27.0 on Apple M1 Pro:
 
 | Milestone | Status | Evidence |
 |---|---|---|
