@@ -387,6 +387,15 @@ mod native {
             }
         }
 
+        eprintln!(
+            "run summary: instructions={} elapsed_ms={} configured_boot={:?} active_boot={:?} {}",
+            total_executed,
+            start.elapsed().as_millis(),
+            machine.boot_device(),
+            machine.active_boot_device(),
+            cpu_diagnostic(&mut machine)
+        );
+
         // Flush any remaining serial bytes.
         stream_serial(&mut machine, &mut serial_sink)?;
         if let Err(e) = serial_sink.flush() {
@@ -579,13 +588,76 @@ mod native {
                 Ok(LoopControl::Continue)
             }
             RunExit::Assist { reason, .. } => {
-                bail!("execution stopped: assist required: {reason:?}")
+                bail!(
+                    "execution stopped: assist required: {reason:?}; {}",
+                    cpu_diagnostic(machine)
+                )
             }
             RunExit::Exception { exception, .. } => {
-                bail!("execution stopped: exception: {exception:?}")
+                bail!(
+                    "execution stopped: exception: {exception:?}; {}",
+                    cpu_diagnostic(machine)
+                )
             }
-            RunExit::CpuExit { exit, .. } => bail!("execution stopped: cpu exit: {exit:?}"),
+            RunExit::CpuExit { exit, .. } => bail!(
+                "execution stopped: cpu exit: {exit:?}; {}",
+                cpu_diagnostic(machine)
+            ),
         }
+    }
+
+    fn cpu_diagnostic(machine: &mut Machine) -> String {
+        let state = machine.cpu().clone();
+        let linear_ip = state.segments.cs.base.wrapping_add(state.rip());
+        let linear_sp = state.segments.ss.base.wrapping_add(state.stack_ptr());
+        let instruction_bytes = if state.control.cr0 & (1 << 31) == 0 {
+            let bytes = machine.read_physical_bytes(linear_ip, 16);
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            String::from("<paging enabled; linear-to-physical translation unavailable>")
+        };
+        let stack_bytes = if state.control.cr0 & (1 << 31) == 0 {
+            let bytes = machine.read_physical_bytes(linear_sp, 32);
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            String::from("<paging enabled; linear-to-physical translation unavailable>")
+        };
+        format!(
+            "cpu={{mode={:?} cs={:#06x} cs_base={:#018x} rip={:#018x} linear_ip={:#018x} \
+             rflags={:#018x} cr0={:#018x} cr3={:#018x} cr4={:#018x} efer={:#018x} \
+             rax={:#018x} rbx={:#018x} rcx={:#018x} rdx={:#018x} rsi={:#018x} \
+             rdi={:#018x} rbp={:#018x} rsp={:#018x} linear_sp={:#018x} \
+             bytes=[{}] stack=[{}]}}",
+            state.mode,
+            state.segments.cs.selector,
+            state.segments.cs.base,
+            state.rip(),
+            linear_ip,
+            state.rflags_snapshot(),
+            state.control.cr0,
+            state.control.cr3,
+            state.control.cr4,
+            state.msr.efer,
+            state.gpr[0],
+            state.gpr[3],
+            state.gpr[1],
+            state.gpr[2],
+            state.gpr[6],
+            state.gpr[7],
+            state.gpr[5],
+            state.gpr[4],
+            linear_sp,
+            instruction_bytes,
+            stack_bytes
+        )
     }
 
     fn dump_vga_png(machine: &mut Machine, path: &Path) -> Result<()> {

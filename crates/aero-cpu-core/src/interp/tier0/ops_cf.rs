@@ -7,7 +7,7 @@ use crate::linear_mem::{
 };
 use crate::mem::CpuBus;
 use crate::state::{mask_bits, CpuMode, CpuState, FLAG_ZF, RFLAGS_IF, RFLAGS_IOPL_MASK};
-use aero_x86::{DecodedInst, Instruction, Mnemonic, OpKind, Register};
+use aero_x86::{Code, DecodedInst, Instruction, Mnemonic, OpKind, Register};
 
 pub fn handles_mnemonic(m: Mnemonic) -> bool {
     matches!(
@@ -45,7 +45,13 @@ pub fn handles_mnemonic(m: Mnemonic) -> bool {
             | Mnemonic::Pusha
             | Mnemonic::Popa
             | Mnemonic::Pushf
+            | Mnemonic::Pushfd
+            | Mnemonic::Pushfq
             | Mnemonic::Popf
+            | Mnemonic::Popfd
+            | Mnemonic::Popfq
+            | Mnemonic::Enter
+            | Mnemonic::Leave
     )
 }
 
@@ -61,9 +67,7 @@ pub fn exec<B: CpuBus>(
         Mnemonic::Jmp => {
             if is_far_branch(instr) {
                 if matches!(state.mode, CpuMode::Real | CpuMode::Vm86) {
-                    // Real-mode far jump (ptr16:16).
-                    let selector = instr.far_branch_selector();
-                    let offset = instr.far_branch16() as u64;
+                    let (selector, offset) = read_real_mode_far_target(state, bus, instr, next_ip)?;
                     state.write_reg(Register::CS, selector as u64);
                     state.set_rip(offset);
                     return Ok(ExecOutcome::Branch);
@@ -205,14 +209,14 @@ pub fn exec<B: CpuBus>(
             }
             Ok(ExecOutcome::Continue)
         }
-        Mnemonic::Pushf => {
-            let bits = state.bitness();
+        Mnemonic::Pushf | Mnemonic::Pushfd | Mnemonic::Pushfq => {
+            let bits = flags_stack_operand_bits(instr)?;
             let v = state.rflags() & mask_bits(bits);
             push(state, bus, v, bits / 8)?;
             Ok(ExecOutcome::Continue)
         }
-        Mnemonic::Popf => {
-            let bits = state.bitness();
+        Mnemonic::Popf | Mnemonic::Popfd | Mnemonic::Popfq => {
+            let bits = flags_stack_operand_bits(instr)?;
             let v = pop(state, bus, bits / 8)? & mask_bits(bits);
             let old = state.rflags();
 
@@ -254,6 +258,44 @@ pub fn exec<B: CpuBus>(
 
             let new = (old & !write_mask) | (v & write_mask);
             state.set_rflags(new);
+            Ok(ExecOutcome::Continue)
+        }
+        Mnemonic::Enter => {
+            let bits = enter_leave_operand_bits(instr)?;
+            let size = bits / 8;
+            let bp_reg = frame_pointer_reg(bits)?;
+            let allocation_size = u64::from(instr.immediate16());
+            let nesting_level = instr.immediate8_2nd() & 0x1f;
+
+            let old_frame_pointer = state.read_reg(bp_reg) & mask_bits(bits);
+            push(state, bus, old_frame_pointer, size)?;
+            let frame_temp = state.stack_ptr();
+
+            if nesting_level != 0 {
+                let mut frame_pointer = old_frame_pointer;
+                for _ in 1..nesting_level {
+                    frame_pointer = frame_pointer.wrapping_sub(u64::from(size)) & mask_bits(bits);
+                    let addr = state
+                        .apply_a20(state.seg_base_reg(Register::SS).wrapping_add(frame_pointer));
+                    let value = read_stack_value(state, bus, addr, size)?;
+                    push(state, bus, value, size)?;
+                }
+                push(state, bus, frame_temp, size)?;
+            }
+
+            state.write_reg(bp_reg, frame_temp & mask_bits(bits));
+            let sp =
+                state.stack_ptr().wrapping_sub(allocation_size) & mask_bits(state.stack_ptr_bits());
+            state.set_stack_ptr(sp);
+            Ok(ExecOutcome::Continue)
+        }
+        Mnemonic::Leave => {
+            let bits = enter_leave_operand_bits(instr)?;
+            let size = bits / 8;
+            let bp_reg = frame_pointer_reg(bits)?;
+            state.set_stack_ptr(state.read_reg(bp_reg));
+            let restored_frame_pointer = pop(state, bus, size)?;
+            state.write_reg(bp_reg, restored_frame_pointer);
             Ok(ExecOutcome::Continue)
         }
         Mnemonic::Loop | Mnemonic::Loope | Mnemonic::Loopne => {
@@ -309,8 +351,83 @@ pub fn exec<B: CpuBus>(
     }
 }
 
+fn flags_stack_operand_bits(instr: &Instruction) -> Result<u32, Exception> {
+    match instr.code() {
+        Code::Pushfw | Code::Popfw => Ok(16),
+        Code::Pushfd | Code::Popfd => Ok(32),
+        Code::Pushfq | Code::Popfq => Ok(64),
+        _ => Err(Exception::InvalidOpcode),
+    }
+}
+
+fn enter_leave_operand_bits(instr: &Instruction) -> Result<u32, Exception> {
+    match instr.code() {
+        Code::Enterw_imm16_imm8 | Code::Leavew => Ok(16),
+        Code::Enterd_imm16_imm8 | Code::Leaved => Ok(32),
+        Code::Enterq_imm16_imm8 | Code::Leaveq => Ok(64),
+        _ => Err(Exception::InvalidOpcode),
+    }
+}
+
+fn frame_pointer_reg(bits: u32) -> Result<Register, Exception> {
+    match bits {
+        16 => Ok(Register::BP),
+        32 => Ok(Register::EBP),
+        64 => Ok(Register::RBP),
+        _ => Err(Exception::InvalidOpcode),
+    }
+}
+
+fn read_stack_value<B: CpuBus>(
+    state: &CpuState,
+    bus: &mut B,
+    addr: u64,
+    size: u32,
+) -> Result<u64, Exception> {
+    match size {
+        2 => Ok(read_u16_wrapped(state, bus, addr)? as u64),
+        4 => Ok(read_u32_wrapped(state, bus, addr)? as u64),
+        8 => read_u64_wrapped(state, bus, addr),
+        _ => Err(Exception::InvalidOpcode),
+    }
+}
+
 fn is_far_branch(instr: &Instruction) -> bool {
     matches!(instr.op_kind(0), OpKind::FarBranch16 | OpKind::FarBranch32)
+        || matches!(
+            instr.code(),
+            Code::Call_m1616
+                | Code::Call_m1632
+                | Code::Call_m1664
+                | Code::Jmp_m1616
+                | Code::Jmp_m1632
+                | Code::Jmp_m1664
+        )
+}
+
+fn read_real_mode_far_target<B: CpuBus>(
+    state: &mut CpuState,
+    bus: &mut B,
+    instr: &Instruction,
+    next_ip: u64,
+) -> Result<(u16, u64), Exception> {
+    match instr.op_kind(0) {
+        OpKind::FarBranch16 => Ok((instr.far_branch_selector(), u64::from(instr.far_branch16()))),
+        OpKind::FarBranch32 => Ok((instr.far_branch_selector(), u64::from(instr.far_branch32()))),
+        OpKind::Memory => {
+            let offset_bits = match instr.code() {
+                Code::Call_m1616 | Code::Jmp_m1616 => 16,
+                Code::Call_m1632 | Code::Jmp_m1632 => 32,
+                _ => return Err(Exception::InvalidOpcode),
+            };
+            let addr = calc_ea(state, instr, next_ip, true)?;
+            let offset = super::ops_data::read_mem(state, bus, addr, offset_bits)?;
+            let selector_addr = addr.wrapping_add(u64::from(offset_bits / 8));
+            let selector = read_u16_wrapped(state, bus, selector_addr)?;
+            Ok((selector, offset))
+        }
+        _ => Err(Exception::InvalidOpcode),
+    }
 }
 
 fn is_seg_reg(reg: Register) -> bool {

@@ -18,6 +18,11 @@ pub fn handles_mnemonic(m: Mnemonic) -> bool {
             | Mnemonic::Movzx
             | Mnemonic::Bswap
             | Mnemonic::Xadd
+            | Mnemonic::Lds
+            | Mnemonic::Les
+            | Mnemonic::Lfs
+            | Mnemonic::Lgs
+            | Mnemonic::Lss
     ) || is_cmov(m)
         || is_setcc(m)
 }
@@ -66,6 +71,40 @@ pub fn exec<B: CpuBus>(
             let addr = calc_ea(state, instr, next_ip, false)?;
             write_op(state, bus, instr, 0, addr, next_ip)?;
             Ok(ExecOutcome::Continue)
+        }
+        Mnemonic::Lds | Mnemonic::Les | Mnemonic::Lfs | Mnemonic::Lgs | Mnemonic::Lss => {
+            if !matches!(
+                state.mode,
+                crate::state::CpuMode::Real | crate::state::CpuMode::Vm86
+            ) {
+                return Ok(ExecOutcome::Assist(AssistReason::Privileged));
+            }
+            if instr.op_kind(0) != OpKind::Register || instr.op_kind(1) != OpKind::Memory {
+                return Err(Exception::InvalidOpcode);
+            }
+            let offset_bits = op_bits(state, instr, 0)?;
+            if !matches!(offset_bits, 16 | 32 | 64) {
+                return Err(Exception::InvalidOpcode);
+            }
+            let addr = calc_ea(state, instr, next_ip, true)?;
+            let offset = read_mem(state, bus, addr, offset_bits)?;
+            let selector_addr = state.apply_a20(addr.wrapping_add(u64::from(offset_bits / 8)));
+            let selector = read_u16_wrapped(state, bus, selector_addr)?;
+            let segment = match instr.mnemonic() {
+                Mnemonic::Lds => Register::DS,
+                Mnemonic::Les => Register::ES,
+                Mnemonic::Lfs => Register::FS,
+                Mnemonic::Lgs => Register::GS,
+                Mnemonic::Lss => Register::SS,
+                _ => unreachable!(),
+            };
+            state.write_reg(instr.op0_register(), offset);
+            state.write_reg(segment, u64::from(selector));
+            if segment == Register::SS {
+                Ok(ExecOutcome::ContinueInhibitInterrupts)
+            } else {
+                Ok(ExecOutcome::Continue)
+            }
         }
         Mnemonic::Xchg => {
             let lock = instr.has_lock_prefix();
@@ -325,9 +364,9 @@ pub(crate) fn op_bits(_state: &CpuState, instr: &Instruction, op: usize) -> Resu
 fn mem_bits(instr: &Instruction) -> Result<u32, Exception> {
     let bits = match instr.memory_size() {
         MemorySize::UInt8 | MemorySize::Int8 => 8,
-        MemorySize::UInt16 | MemorySize::Int16 => 16,
-        MemorySize::UInt32 | MemorySize::Int32 => 32,
-        MemorySize::UInt64 | MemorySize::Int64 => 64,
+        MemorySize::UInt16 | MemorySize::Int16 | MemorySize::WordOffset => 16,
+        MemorySize::UInt32 | MemorySize::Int32 | MemorySize::DwordOffset => 32,
+        MemorySize::UInt64 | MemorySize::Int64 | MemorySize::QwordOffset => 64,
         _ => return Err(Exception::InvalidOpcode),
     };
     Ok(bits)

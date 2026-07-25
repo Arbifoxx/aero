@@ -1,4 +1,4 @@
-use aero_x86::{DecodedInst, Instruction, Mnemonic, OpKind, Register};
+use aero_x86::{Code, DecodedInst, Instruction, Mnemonic, OpKind, Register};
 
 use crate::cpuid::{self, CpuFeatures};
 use crate::exception::{AssistReason, Exception};
@@ -1055,10 +1055,17 @@ fn instr_retf<B: CpuBus>(
         0
     };
 
-    let off_bits = state.bitness();
+    let off_bits = match instr.code() {
+        Code::Retfw | Code::Retfw_imm16 => 16,
+        Code::Retfd | Code::Retfd_imm16 => 32,
+        Code::Retfq | Code::Retfq_imm16 => 64,
+        _ => return Err(Exception::InvalidOpcode),
+    };
     let off_size = off_bits / 8;
     let off = pop_sized(state, bus, off_size)? & mask_bits(off_bits);
-    let cs = pop_u16(state, bus)?;
+    // The selector occupies an operand-sized stack slot. Only its low 16 bits
+    // are loaded into CS.
+    let cs = pop_sized(state, bus, off_size)? as u16;
     let sp = state.stack_ptr().wrapping_add(pop_imm as u64);
     state.set_stack_ptr(sp);
     far_jump(state, bus, cs, off)
