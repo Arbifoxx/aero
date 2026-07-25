@@ -9,10 +9,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use aero_machine::{Machine, MachineConfig, Ps2MouseButton, RunExit};
+use aero_machine::{BootDevice, Machine, MachineConfig, Ps2MouseButton, RunExit};
 use aero_storage::{DiskImage, StdFileBackend, VirtualDisk, SECTOR_SIZE};
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -27,6 +27,14 @@ struct Args {
     /// Disk image to attach as the primary HDD (raw/qcow2/vhd/aerospar; auto-detected).
     #[arg(long)]
     disk: Option<PathBuf>,
+
+    /// Windows install/recovery ISO to attach as the canonical ATAPI CD-ROM.
+    #[arg(long)]
+    install_iso: Option<PathBuf>,
+
+    /// BIOS boot policy. Defaults to HDD, CD-ROM, or CD-first based on attached media.
+    #[arg(long, value_enum)]
+    boot: Option<BootMode>,
 
     /// Guest memory in MiB.
     #[arg(long, default_value_t = 512)]
@@ -74,6 +82,16 @@ struct Args {
     trace_scanout: bool,
     #[arg(long)]
     trace_shared_surfaces: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum BootMode {
+    /// Boot from the primary HDD.
+    Hdd,
+    /// Boot directly from the install-media CD-ROM.
+    Cdrom,
+    /// Try the CD-ROM when present, then fall back to the HDD.
+    CdFirst,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -132,7 +150,9 @@ fn list_metal_adapters(allow_fallback: bool) {
             info.backend, info.device_type, info.vendor, info.device
         );
         println!("  driver={} ({})", info.driver, info.driver_info);
-        println!("  fallback_requested={allow_fallback} (wgpu 0.20 does not expose adapter fallback status)");
+        println!(
+            "  fallback_requested={allow_fallback} (wgpu 0.20 does not expose adapter fallback status)"
+        );
         println!(
             "  max_texture_dimension_2d={} max_buffer_size={}",
             limits.max_texture_dimension_2d, limits.max_buffer_size
@@ -177,6 +197,9 @@ fn run(args: Args) -> Result<()> {
     let mut machine = (!args.host_triangle)
         .then(|| create_machine(&args, trace))
         .transpose()?;
+    let mut cd_first_enabled = machine
+        .as_ref()
+        .is_some_and(|machine| machine.boot_from_cd_if_present());
     let started = Instant::now();
     let deadline = args.max_ms.map(|ms| started + Duration::from_millis(ms));
     let mut last_cursor = None;
@@ -248,8 +271,64 @@ fn run(args: Args) -> Result<()> {
                 }
                 if let Some(machine) = machine.as_mut() {
                     let exit = machine.run_slice(MACHINE_SLICE_INSTRUCTIONS);
-                    if !matches!(exit, RunExit::Completed { .. }) {
-                        tracing::debug!(?exit, "machine slice exit");
+                    match exit {
+                        RunExit::Completed { .. } => {}
+                        RunExit::Halted { .. } => {
+                            // Keep polling devices: a pending timer or input interrupt can wake HLT.
+                            tracing::trace!("guest halted; continuing device polling");
+                        }
+                        RunExit::ResetRequested { kind, .. } => {
+                            if cd_first_enabled
+                                && machine.active_boot_device() == BootDevice::Cdrom
+                            {
+                                tracing::info!(
+                                    ?kind,
+                                    "guest reset after CD boot; disabling CD-first policy and booting HDD"
+                                );
+                                machine.set_boot_from_cd_if_present(false);
+                                machine.set_boot_drive(0x80);
+                                cd_first_enabled = false;
+                            } else {
+                                tracing::info!(?kind, "guest requested reset");
+                            }
+                            machine.reset();
+                        }
+                        RunExit::Assist { reason, .. } => {
+                            let cpu = machine.cpu();
+                            tracing::error!(
+                                ?reason,
+                                mode = ?cpu.mode,
+                                cs = cpu.segments.cs.selector,
+                                rip = cpu.rip(),
+                                "unhandled CPU assist"
+                            );
+                            target.exit();
+                            return;
+                        }
+                        RunExit::Exception { exception, .. } => {
+                            let cpu = machine.cpu();
+                            tracing::error!(
+                                ?exception,
+                                mode = ?cpu.mode,
+                                cs = cpu.segments.cs.selector,
+                                rip = cpu.rip(),
+                                "guest execution stopped on CPU exception"
+                            );
+                            target.exit();
+                            return;
+                        }
+                        RunExit::CpuExit { exit, .. } => {
+                            let cpu = machine.cpu();
+                            tracing::error!(
+                                ?exit,
+                                mode = ?cpu.mode,
+                                cs = cpu.segments.cs.selector,
+                                rip = cpu.rip(),
+                                "guest execution stopped on fatal CPU exit"
+                            );
+                            target.exit();
+                            return;
+                        }
                     }
                     trace_machine_state(machine, trace, &mut last_trace);
                 }
@@ -262,6 +341,7 @@ fn run(args: Args) -> Result<()> {
 }
 
 fn create_machine(args: &Args, trace: TraceOptions) -> Result<Machine> {
+    let boot_mode = resolve_boot_mode(args.disk.is_some(), args.install_iso.is_some(), args.boot)?;
     let ram_bytes = args
         .memory
         .checked_mul(1024 * 1024)
@@ -274,11 +354,44 @@ fn create_machine(args: &Args, trace: TraceOptions) -> Result<Machine> {
     let mut machine = Machine::new(cfg).map_err(|err| anyhow!(err))?;
     if let Some(path) = &args.disk {
         machine
-            .set_disk_backend(open_disk(path)?)
+            .set_disk_backend(open_disk(path, false)?)
             .map_err(|err| anyhow!(err))?;
-    } else {
+    } else if args.install_iso.is_none() {
         tracing::warn!("no --disk supplied; starting firmware with an empty primary disk");
     }
+    if let Some(path) = &args.install_iso {
+        machine
+            .attach_install_media_iso_and_set_overlay_ref(
+                open_disk(path, true)?,
+                path.display().to_string(),
+            )
+            .with_context(|| format!("failed to attach install ISO {}", path.display()))?;
+    }
+    match boot_mode {
+        BootMode::Hdd => {
+            machine.set_boot_from_cd_if_present(false);
+            machine.set_boot_drive(0x80);
+        }
+        BootMode::Cdrom => {
+            machine.set_boot_from_cd_if_present(false);
+            machine.set_boot_drive(0xE0);
+        }
+        BootMode::CdFirst => {
+            machine.set_cd_boot_drive(0xE0);
+            machine.set_boot_from_cd_if_present(true);
+            machine.set_boot_drive(0x80);
+        }
+    }
+    // Machine::new performs BIOS POST immediately. Attached media and the selected boot policy are
+    // therefore not visible until reset re-runs POST.
+    machine.reset();
+    tracing::info!(
+        configured_boot = ?machine.boot_device(),
+        active_boot = ?machine.active_boot_device(),
+        disk = ?args.disk,
+        install_iso = ?args.install_iso,
+        "machine boot media configured"
+    );
     if args.aerogpu_wgpu {
         if args.no_aerogpu {
             bail!("--aerogpu-wgpu conflicts with --no-aerogpu");
@@ -301,10 +414,38 @@ fn create_machine(args: &Args, trace: TraceOptions) -> Result<Machine> {
     Ok(machine)
 }
 
-fn open_disk(path: &Path) -> Result<Box<dyn VirtualDisk>> {
-    let backend = StdFileBackend::open_rw(path)
-        .or_else(|_| StdFileBackend::open_read_only(path))
-        .map_err(|err| anyhow!("failed to open disk {}: {err}", path.display()))?;
+fn resolve_boot_mode(
+    has_disk: bool,
+    has_install_iso: bool,
+    requested: Option<BootMode>,
+) -> Result<BootMode> {
+    let mode = requested.unwrap_or(match (has_disk, has_install_iso) {
+        (true, true) => BootMode::CdFirst,
+        (false, true) => BootMode::Cdrom,
+        _ => BootMode::Hdd,
+    });
+    if matches!(mode, BootMode::Cdrom | BootMode::CdFirst) && !has_install_iso {
+        bail!(
+            "--boot {} requires --install-iso",
+            mode.to_possible_value().unwrap().get_name()
+        );
+    }
+    if matches!(mode, BootMode::Hdd | BootMode::CdFirst) && !has_disk {
+        bail!(
+            "--boot {} requires --disk",
+            mode.to_possible_value().unwrap().get_name()
+        );
+    }
+    Ok(mode)
+}
+
+fn open_disk(path: &Path, read_only: bool) -> Result<Box<dyn VirtualDisk>> {
+    let backend = if read_only {
+        StdFileBackend::open_read_only(path)
+    } else {
+        StdFileBackend::open_rw(path).or_else(|_| StdFileBackend::open_read_only(path))
+    }
+    .map_err(|err| anyhow!("failed to open disk {}: {err}", path.display()))?;
     let disk = DiskImage::open_auto(backend)
         .map_err(|err| anyhow!("failed to inspect disk {}: {err}", path.display()))?;
     let capacity = disk.capacity_bytes();
@@ -315,6 +456,31 @@ fn open_disk(path: &Path) -> Result<Box<dyn VirtualDisk>> {
         );
     }
     Ok(Box::new(disk))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_boot_mode, BootMode};
+
+    #[test]
+    fn boot_mode_defaults_follow_attached_media() {
+        assert_eq!(resolve_boot_mode(true, false, None).unwrap(), BootMode::Hdd);
+        assert_eq!(
+            resolve_boot_mode(false, true, None).unwrap(),
+            BootMode::Cdrom
+        );
+        assert_eq!(
+            resolve_boot_mode(true, true, None).unwrap(),
+            BootMode::CdFirst
+        );
+    }
+
+    #[test]
+    fn boot_mode_rejects_missing_required_media() {
+        assert!(resolve_boot_mode(true, false, Some(BootMode::Cdrom)).is_err());
+        assert!(resolve_boot_mode(false, true, Some(BootMode::Hdd)).is_err());
+        assert!(resolve_boot_mode(false, false, Some(BootMode::CdFirst)).is_err());
+    }
 }
 
 fn trace_machine_state(machine: &Machine, trace: TraceOptions, last: &mut Instant) {
