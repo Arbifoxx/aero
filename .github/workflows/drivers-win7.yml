@@ -530,6 +530,17 @@ jobs:
           }
           pwsh -NoProfile -ExecutionPolicy Bypass -File 'ci\build-drivers.ps1' -ToolchainJson 'out\toolchain.json'
 
+      - name: Upload driver build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: win7-driver-build-diagnostics-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            out/toolchain.json
+            out/logs/drivers/**
+
       - name: Detect built driver binaries
         id: built
         if: steps.detect.outputs.skip != 'true'

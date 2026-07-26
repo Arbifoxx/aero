@@ -187,6 +187,29 @@ function Import-EnvironmentFromBatchFile {
   }
 }
 
+function Get-ProcessEnvironmentSnapshot {
+  $snapshot = @{}
+  foreach ($entry in @(Get-ChildItem Env:)) {
+    $snapshot[$entry.Name] = [string]$entry.Value
+  }
+  return $snapshot
+}
+
+function Restore-ProcessEnvironmentSnapshot {
+  param(
+    [Parameter(Mandatory = $true)][hashtable]$Snapshot
+  )
+
+  foreach ($entry in @(Get-ChildItem Env:)) {
+    if (-not $Snapshot.ContainsKey($entry.Name)) {
+      Remove-Item -LiteralPath ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+    }
+  }
+  foreach ($name in $Snapshot.Keys) {
+    Set-Item -LiteralPath ("Env:{0}" -f $name) -Value ([string]$Snapshot[$name])
+  }
+}
+
 function Initialize-ToolchainEnvironment {
   param(
     $Toolchain,
@@ -636,8 +659,11 @@ function Invoke-MSBuild {
 
   Write-Host (Format-CommandLine -Exe $MSBuildPath -Arguments $args)
 
-  & $MSBuildPath @args
-  $exitCode = $LASTEXITCODE
+  # Send native-process output directly to the host. If it is allowed onto
+  # PowerShell's success pipeline, callers assigning this function's result
+  # receive an Object[] containing every MSBuild line plus the exit code.
+  & $MSBuildPath @args | Out-Host
+  $exitCode = [int]$LASTEXITCODE
 
   return $exitCode
 }
@@ -761,6 +787,7 @@ if ($IncludeMakefileProjects) {
 }
 
 $toolchain = Read-ToolchainJson -ToolchainJsonPath $ToolchainJson
+$baseEnvironment = Get-ProcessEnvironmentSnapshot
 if ($null -ne $toolchain) {
   $bootstrapPlatform = if ($normalizedPlatforms -contains 'x64') { 'x64' } else { $normalizedPlatforms[0] }
   Initialize-ToolchainEnvironment -Toolchain $toolchain -Platform $bootstrapPlatform
@@ -945,6 +972,10 @@ foreach ($target in $targets) {
 
   foreach ($platform in $normalizedPlatforms) {
     if ($null -ne $toolchain) {
+      # VsDevCmd does not reliably switch target architectures in an already
+      # initialized developer prompt. Restore the original runner environment
+      # before importing the environment for each target platform.
+      Restore-ProcessEnvironmentSnapshot -Snapshot $baseEnvironment
       Initialize-ToolchainEnvironment -Toolchain $toolchain -Platform $platform
     }
 
