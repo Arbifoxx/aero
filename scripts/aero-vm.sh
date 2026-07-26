@@ -38,7 +38,7 @@ Environment:
   AERO_MACHINE_BIN   Override the headless aero-machine executable
 
 Notes:
-  - Windows 7 boot is still experimental and currently stops before the installer UI.
+  - Windows 7 boot is still experimental and has not reached the installer UI.
   - One vCPU is the supported bring-up setting. More than one enables incomplete SMP.
   - VM disks and Windows media remain outside the repository and are never bundled.
 EOF
@@ -383,7 +383,7 @@ cmd_start() {
     [[ -n "$iso" && -f "$iso" ]] || die "--install requires an attached ISO"
   fi
 
-  warn "Windows 7 currently stops in early loader initialization before the installer UI"
+  warn "Windows 7 has passed the former loader crash but has not reached the installer UI"
 
   local -a command
   if ((headless)); then

@@ -2,10 +2,11 @@
 
 This guide describes the native Apple Silicon frontend in `crates/aero-macos`.
 It is an experimental emulator, not a production replacement for QEMU,
-VirtualBox, VMware, or Parallels. As of 2026-07-25, Windows 7 reaches its
-32-bit bootloader but stops before the installer UI. The commands below create
-durable VM storage and launch the implemented path; they do not imply that a
-Windows installation can complete yet.
+VirtualBox, VMware, or Parallels. As of 2026-07-25, Windows 7 passes the former
+32-bit bootloader callback crash, but an extended run still has not displayed
+the installer UI. The commands below create durable VM storage and launch the
+implemented path; they do not imply that a Windows installation can complete
+yet.
 
 ## The important mental model
 
@@ -123,7 +124,9 @@ the D3D9Ex test result.
 
 ## Current limitations that affect VM choices
 
-- Windows setup has not reached a visible UI.
+- Windows setup has not reached a visible UI; the former null-callback crash
+  is fixed, and the current extended-run boundary is in low real-mode callback
+  traffic.
 - One vCPU is the only recommended boot configuration.
 - Guest CPU execution is emulated and may remain slow even after GPU
   acceleration works.

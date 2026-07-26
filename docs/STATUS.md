@@ -17,7 +17,7 @@ bootloader bring-up commit is `f70373d91`.
 | AeroGPU protocol/device suites | validated on host | complete `aero-protocol` and `aero-devices-gpu` test suites pass |
 | Native AeroGPU wgpu executor | builds/tests | native smoke test passes on Metal |
 | Real Windows 7 ISO boot | partial, blocked before UI | reaches 32-bit protected bootloader code; no Windows Boot Manager pixels yet |
-| Win7 KMD load / BAR-ring-fence traffic | not reached | current CPU/bootloader blocker occurs before PnP |
+| Win7 KMD load / BAR-ring-fence traffic | not reached | extended boot run has not reached PnP |
 | Guest D3D9 triangle | not reached | in-tree `d3d9ex_triangle` is ready but cannot run until guest boot and driver install |
 | DWM / Aero Glass | not validated | depends on the same guest milestones |
 
@@ -29,40 +29,45 @@ Reference media:
 - SHA-256
   `36f4fa2416d0982697ab106e3a72d2e120dbcdb6cc54fd3906d06120d0653808`
 
-An optimized ISO-only run executes 20,376,806 instructions and reaches
-32-bit protected code. At `0020:0040695f`, `mov eax,[0x00495e08]` loads a null
-bootloader global. The following `call [eax]` reads physical address zero,
-interprets the IVT bytes for `F000:EF00` as a flat target (`0xf000ef00`), and
-then faults on unmapped `0xff` bytes.
+The former deterministic crash at instruction 20,376,806 is fixed. The root
+cause was independent code and stack address sizes: Windows ran 16-bit code
+(`CS.D=0`) with a 32-bit stack (`SS.B=1`), but Aero selected SP from the code
+width. Four 32-bit transition pushes updated ESP while writing through its low
+16-bit alias at `0x00001fec..0x00001ffb`, leaving the intended
+`0x00061fec..0x00061ffb` call frame uninitialized. Boot Manager consequently
+received `0xffff79af` instead of the valid `0x00025398` `"BOOT APP"` handoff
+pointer and skipped callback registration.
 
-A physical-memory write watch narrowed initialization further. Instruction
-19,059,871 is a zero-fill `REP STOSD` covering `0x0046d000..0x00496060`;
-the watched global is deliberately initialized to zero at instruction
-19,059,872 and receives no later write before the call. In a local black-box
-reference boot of the same media, the global contains a low-memory callback
-table pointer at the call site. Aero and the reference have the same pointer
-and transition stub already present at physical `0x0002530c` and `0x00023dc0`;
-the missing step is propagation into the protected loader global. Supplying
-the observed table pointer to Aero as a debug-only memory patch advances just
-263 instructions before state diverges again, so hardcoding the pointer is
-neither correct nor a fix.
+Stack address size now follows `SS.B` outside long mode. The real ISO produces
+the same transition frame, low callback table, and protected globals as the
+QEMU reference:
+
+- handoff argument: `0x00025398`
+- callback table: `0x000252f8`
+- callback-table owner pointer: `[0x0002530c] = 0x000252f8`
+- protected callback global: `[0x00495e08] = 0x000252f8`
+
+An optimized run now passes the old crash and reaches 100,000,000 instructions
+without an exception. At that limit it is still executing the low real-mode
+transition/BIOS-callback path and the 720×400 framebuffer remains black with a
+top-left cursor. This is the current observation boundary: it proves substantial
+forward progress, but not an installer UI or a completed Windows boot.
 
 The comparison also found Aero incorrectly allowed `CR0.ET` to read as zero.
 The reset state and CR0 write paths now keep this modern-CPU fixed bit set,
 matching the reference `CR0=0x11` at the boundary. This is an architectural
-correction with a regression test, but it does not initialize the callback or
-move the boot boundary.
+correction with a regression test. The later stack-address fix is what moved
+the boot boundary.
 
-The earliest next task is therefore to locate the missing
-`0x0002530c`-to-`0x00495e08` callback-registration path and compare its
-inputs—firmware handoff data, CPU semantics, and loader control flow—with the
-reference behavior. The terminal invalid opcode is only a downstream symptom.
+The earliest next task is to determine whether the repeated low real-mode
+callback traffic is simply slow forward I/O progress or a new loop, compare
+its callback sequence and state with QEMU, and reach the first visible setup
+screen.
 
 The run now passes the earlier deterministic loader gaps for ENTER/LEAVE,
 PUSHFD/POPFD operand overrides, LES, indirect far JMP, RETFD stack width, and
 indirect jump-table offset widths. Each has a focused interpreter regression
 test.
 
-The dumped framebuffer remains a black 720×400 boot surface with a top-left
-cursor. Therefore this status does not claim a visible Windows boot screen,
-driver initialization, a D3D9 triangle, or Aero Glass.
+Therefore this status does not claim a visible Windows boot screen, driver
+initialization, a D3D9 triangle, or Aero Glass.

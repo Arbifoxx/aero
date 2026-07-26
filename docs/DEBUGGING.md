@@ -23,11 +23,11 @@ target/release/aero-machine \
 Failure reports include mode, segment selectors/bases, RIP/linear IP, flags,
 control registers, descriptor-table bases/limits, GPRs, instruction bytes, and
 stack bytes while paging is disabled. Once a failure is deterministic,
-`--max-insts N` can stop immediately before it; this is how the current null
+`--max-insts N` can stop immediately before it; this is how the former null
 callback at `0020:0040695f` was separated from its later `0xf000ef00` symptom.
 
-For write provenance, use a bounded physical watchpoint. The runner can switch
-to single-instruction slices only near the suspected interval:
+For provenance, use bounded physical read/write watchpoints. The runner can
+switch to single-instruction slices only near the suspected interval:
 
 ```bash
 target/release/aero-machine \
@@ -41,6 +41,11 @@ target/release/aero-machine \
   --watch-stop \
   --inspect-phys 0x495e08:16
 ```
+
+Use `--watch-read-phys ADDRESS:LENGTH` with the same threshold, granularity,
+and stop options to identify the instruction that consumes a handoff field.
+Read events contain only bytes returned by the original access; tracing does
+not perform a second MMIO read.
 
 `--dump-phys ADDRESS:LENGTH:PATH` writes a local byte dump capped at 256 MiB.
 Guest dumps can contain proprietary material and must not be committed.

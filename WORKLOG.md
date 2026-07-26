@@ -102,3 +102,29 @@ Next: trace reads of the low callback table and the code path that should copy
 `0x2530c` into `0x495e08`, starting from handoff data passed from the 16-bit
 boot environment into the protected loader. Do not convert the observed
 pointer into a product workaround.
+
+## 2026-07-25 — fixed mixed-width transition stack
+
+- Added bounded guest-physical read watchpoints and used them to locate the
+  first consumption of the low callback data at instruction 20,372,390.
+- The earlier low-table comparison was incomplete: QEMU populated
+  `0x252f8..0x2530f`, while Aero left it zero. The protected registration
+  routine at `0x0040674b` was not at fault; Aero skipped its caller because
+  the `"BOOT APP"` handoff pointer was invalid.
+- At Boot Manager entry, both executions had `EDX=0x25398` and
+  `ESP=0x61ff4`. QEMU's stack contained return `0x20a9a` and argument
+  `0x25398`; Aero's intended values were instead found at the low-16-bit
+  aliases `0x1ff4` and `0x1ff8`.
+- Fixed canonical stack pointer selection. Outside long mode the stack address
+  size now follows `SS.B`, independently of the code width selected by
+  `CS.D`. Added a protected-16-code/32-bit-stack regression matching the
+  Windows transition thunk.
+- The real ISO now fills `[0x2530c]=0x252f8` and
+  `[0x495e08]=0x252f8`, passes the former 20,376,806-instruction null call,
+  and reaches 100,000,000 instructions without an exception.
+- The framebuffer at that limit is still black and execution is in the low
+  real-mode callback path. No installer UI or guest acceleration is claimed.
+
+Next: measure callback/I/O progress across longer runs and compare the
+real-mode callback sequence with QEMU to distinguish slow loading from the
+next deterministic loop.
