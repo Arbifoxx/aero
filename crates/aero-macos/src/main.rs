@@ -68,6 +68,13 @@ struct Args {
     #[arg(long)]
     max_ms: Option<u64>,
 
+    /// Override the deterministic guest TSC frequency in Hz.
+    ///
+    /// Debugging only: lower values make guest timers advance faster per retired instruction
+    /// and change guest-visible timing.
+    #[arg(long, value_name = "HZ")]
+    guest_cpu_hz: Option<u64>,
+
     /// Rust tracing filter (for example, `debug` or `aero_machine=trace`).
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -206,6 +213,7 @@ fn run(args: Args) -> Result<()> {
         .is_some_and(|machine| machine.boot_from_cd_if_present());
     let started = Instant::now();
     let deadline = args.max_ms.map(|ms| started + Duration::from_millis(ms));
+    let guest_cpu_hz = args.guest_cpu_hz;
     let mut last_cursor = None;
     let mut last_trace = Instant::now();
     let mut exiting = false;
@@ -296,6 +304,9 @@ fn run(args: Args) -> Result<()> {
                                 tracing::info!(?kind, "guest requested reset");
                             }
                             machine.reset();
+                            if let Some(hz) = guest_cpu_hz {
+                                set_guest_cpu_hz(machine, hz);
+                            }
                         }
                         RunExit::Assist { reason, .. } => {
                             let cpu = machine.cpu();
@@ -349,6 +360,9 @@ fn create_machine(args: &Args, trace: TraceOptions) -> Result<Machine> {
     if args.cpus == 0 {
         bail!("--cpus must be at least 1");
     }
+    if args.guest_cpu_hz == Some(0) {
+        bail!("--guest-cpu-hz must be greater than zero");
+    }
     if args.cpus > 1 {
         tracing::warn!(
             cpus = args.cpus,
@@ -399,6 +413,13 @@ fn create_machine(args: &Args, trace: TraceOptions) -> Result<Machine> {
     // Machine::new performs BIOS POST immediately. Attached media and the selected boot policy are
     // therefore not visible until reset re-runs POST.
     machine.reset();
+    if let Some(hz) = args.guest_cpu_hz {
+        set_guest_cpu_hz(&mut machine, hz);
+        tracing::warn!(
+            guest_cpu_hz = hz,
+            "diagnostic guest TSC frequency override active; timing is not representative"
+        );
+    }
     tracing::info!(
         configured_boot = ?machine.boot_device(),
         active_boot = ?machine.active_boot_device(),
@@ -427,6 +448,12 @@ fn create_machine(args: &Args, trace: TraceOptions) -> Result<Machine> {
         );
     }
     Ok(machine)
+}
+
+fn set_guest_cpu_hz(machine: &mut Machine, hz: u64) {
+    for cpu_index in 0..machine.cpu_count() {
+        machine.cpu_core_mut_by_index(cpu_index).time.set_tsc_hz(hz);
+    }
 }
 
 fn resolve_boot_mode(
@@ -504,6 +531,7 @@ mod tests {
             aerogpu_wgpu: false,
             no_aerogpu: false,
             max_ms: Some(1),
+            guest_cpu_hz: None,
             log_level: "info".into(),
             trace_pci: false,
             trace_mmio: false,

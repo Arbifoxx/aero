@@ -77,6 +77,13 @@ mod native {
         #[arg(long)]
         max_ms: Option<u64>,
 
+        /// Override the deterministic guest TSC frequency in Hz.
+        ///
+        /// Debugging only: lower values make guest timers advance faster per retired instruction
+        /// and change guest-visible timing.
+        #[arg(long, value_name = "HZ")]
+        guest_cpu_hz: Option<u64>,
+
         /// Where to write accumulated COM1 output bytes (`stdout` or a file path).
         #[arg(long, default_value = "stdout")]
         serial_out: String,
@@ -325,6 +332,9 @@ mod native {
         if args.cpus == 0 {
             bail!("--cpus must be at least 1");
         }
+        if args.guest_cpu_hz == Some(0) {
+            bail!("--guest-cpu-hz must be greater than zero");
+        }
         if args.cpus > 1 {
             eprintln!(
                 "warning: SMP is experimental; use --cpus 1 for Windows 7 boot compatibility"
@@ -547,6 +557,15 @@ mod native {
             // attaching disks and configuring boot policy so the guest starts executing from the
             // selected boot device.
             machine.reset();
+        }
+
+        if let Some(hz) = args.guest_cpu_hz {
+            for cpu_index in 0..machine.cpu_count() {
+                machine.cpu_core_mut_by_index(cpu_index).time.set_tsc_hz(hz);
+            }
+            eprintln!(
+                "warning: diagnostic guest TSC frequency override active: {hz} Hz; timing is not representative"
+            );
         }
 
         let mut serial_sink = open_serial_sink(&args.serial_out)?;
