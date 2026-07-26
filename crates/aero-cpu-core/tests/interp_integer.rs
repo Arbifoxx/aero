@@ -4,7 +4,7 @@ use aero_cpu_core::interp::tier0::exec::{
 };
 use aero_cpu_core::interp::tier0::Tier0Config;
 use aero_cpu_core::mem::{CpuBus, FlatTestBus};
-use aero_cpu_core::state::{CpuMode, CpuState, FLAG_CF, FLAG_ZF, RFLAGS_IF};
+use aero_cpu_core::state::{CpuMode, CpuState, FLAG_CF, FLAG_ZF, RFLAGS_IF, SEG_ACCESS_DB};
 use aero_cpu_core::AssistReason;
 use aero_cpu_core::CpuCore;
 use aero_x86::Register;
@@ -78,6 +78,34 @@ fn pushfd_popfd_use_operand_override_width_in_16_bit_mode() {
     assert_eq!(step(&mut state, &mut bus).unwrap(), StepExit::Continue);
     assert_eq!(state.read_reg(Register::SP), 0x800);
     assert_eq!(state.rflags() & 0x0020_0202, 0x0020_0202);
+}
+
+#[test]
+fn protected16_push_uses_32bit_stack_pointer_when_ss_db_is_set() {
+    // CS.D selects 16-bit instructions, while SS.B independently selects ESP for stack
+    // addressing. This is the shape used by the Windows boot transition thunk.
+    let code = [0x66, 0x52, 0x66, 0x55]; // push edx; push ebp
+    let mut bus = FlatTestBus::new(0x70000);
+    bus.load(0, &code);
+    let mut state = CpuState::new(CpuMode::Protected);
+    state.segments.cs.access &= !SEG_ACCESS_DB;
+    state.segments.ss.access |= SEG_ACCESS_DB;
+    state.write_reg(Register::ESP, 0x61FFC);
+    state.write_reg(Register::EDX, 0x25398);
+    state.write_reg(Register::EBP, 0x20A9A);
+
+    assert_eq!(state.bitness(), 16);
+    assert_eq!(state.stack_ptr_bits(), 32);
+
+    assert_eq!(step(&mut state, &mut bus).unwrap(), StepExit::Continue);
+    assert_eq!(state.read_reg(Register::ESP), 0x61FF8);
+    assert_eq!(bus.read_u32(0x61FF8).unwrap(), 0x25398);
+    assert_eq!(bus.read_u32(0x1FF8).unwrap(), 0);
+
+    assert_eq!(step(&mut state, &mut bus).unwrap(), StepExit::Continue);
+    assert_eq!(state.read_reg(Register::ESP), 0x61FF4);
+    assert_eq!(bus.read_u32(0x61FF4).unwrap(), 0x20A9A);
+    assert_eq!(bus.read_u32(0x1FF4).unwrap(), 0);
 }
 
 #[test]

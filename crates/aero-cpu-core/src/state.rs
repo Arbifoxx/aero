@@ -834,16 +834,19 @@ impl CpuState {
         match mode {
             CpuMode::Real | CpuMode::Vm86 => {
                 state.segments.cs.access &= !(SEG_ACCESS_DB | SEG_ACCESS_L);
+                state.segments.ss.access &= !SEG_ACCESS_DB;
             }
             CpuMode::Protected => {
                 state.segments.cs.access |= SEG_ACCESS_DB;
                 state.segments.cs.access &= !SEG_ACCESS_L;
+                state.segments.ss.access |= SEG_ACCESS_DB;
             }
             CpuMode::Long => {
                 state.segments.cs.access |= SEG_ACCESS_L;
                 // CS.D is ignored for 64-bit code but keeping it set avoids
                 // accidentally selecting 16-bit widths in helper code.
                 state.segments.cs.access |= SEG_ACCESS_DB;
+                state.segments.ss.access |= SEG_ACCESS_DB;
             }
         }
 
@@ -1424,7 +1427,7 @@ impl CpuState {
     }
 
     pub fn stack_ptr_reg(&self) -> Register {
-        match self.bitness() {
+        match self.stack_ptr_bits() {
             16 => Register::SP,
             32 => Register::ESP,
             _ => Register::RSP,
@@ -1432,10 +1435,12 @@ impl CpuState {
     }
 
     pub fn stack_ptr_bits(&self) -> u32 {
-        match self.bitness() {
-            16 => 16,
-            32 => 32,
-            _ => 64,
+        if self.mode == CpuMode::Long {
+            64
+        } else if self.segments.ss.is_default_32bit() {
+            32
+        } else {
+            16
         }
     }
 
