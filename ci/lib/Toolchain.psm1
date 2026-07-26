@@ -350,6 +350,116 @@ function Resolve-WindowsKitToolchain {
   }
 }
 
+function Get-VsDriverProps {
+  [CmdletBinding()]
+  param()
+
+  $vsInstallPath = Get-VsInstallationPath
+  if ([string]::IsNullOrWhiteSpace($vsInstallPath)) {
+    return $null
+  }
+
+  $vcMsBuildRoot = Join-Path $vsInstallPath 'MSBuild\Microsoft\VC'
+  if (-not (Test-Path -LiteralPath $vcMsBuildRoot)) {
+    return $null
+  }
+
+  $driverProps =
+    Get-ChildItem -LiteralPath $vcMsBuildRoot -Filter 'Driver.props' -File -Recurse -ErrorAction SilentlyContinue |
+      Where-Object { $_.DirectoryName -like '*\BuildCustomizations' } |
+      Select-Object -First 1
+  if ($null -eq $driverProps) {
+    return $null
+  }
+
+  return (Resolve-ExistingPath -LiteralPath $driverProps.FullName)
+}
+
+function Resolve-WindowsDriverKitBuildSupport {
+  [CmdletBinding()]
+  param(
+    [Parameter()]
+    [string]$PreferredKitVersion = '10.0.22621.0'
+  )
+
+  $kitsRoot = Get-WindowsKitsRoot
+  if ([string]::IsNullOrWhiteSpace($kitsRoot)) {
+    return $null
+  }
+
+  $includeRoot = Join-Path $kitsRoot '10\Include'
+  $buildRoot = Join-Path $kitsRoot '10\build'
+  if (-not (Test-Path -LiteralPath $includeRoot) -or -not (Test-Path -LiteralPath $buildRoot)) {
+    return $null
+  }
+
+  $versions = @()
+  if (-not [string]::IsNullOrWhiteSpace($PreferredKitVersion)) {
+    $versions += $PreferredKitVersion
+  } else {
+    $versions += @(
+      Get-ChildItem -LiteralPath $includeRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+        Sort-Object { [Version]$_.Name } -Descending |
+        ForEach-Object { $_.Name }
+    )
+  }
+  $versions = @($versions | Select-Object -Unique)
+
+  $driverProps = Get-VsDriverProps
+  if ([string]::IsNullOrWhiteSpace($driverProps)) {
+    return $null
+  }
+
+  foreach ($version in $versions) {
+    $versionIncludeRoot = Join-Path $includeRoot $version
+    $versionBuildRoot = Join-Path $buildRoot $version
+    $requiredPaths = @(
+      (Join-Path $versionIncludeRoot 'km\ntddk.h'),
+      (Join-Path $versionIncludeRoot 'km\ndis.h'),
+      (Join-Path $versionBuildRoot 'WindowsDriver.Common.props'),
+      (Join-Path $versionBuildRoot 'WindowsDriver.Default.props')
+    )
+    if (@($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -ne 0) {
+      continue
+    }
+
+    $requiredDdiHeaders = @(
+      'd3d10umddi.h',
+      'd3d10_1umddi.h',
+      'd3d11umddi.h',
+      'd3dumddi.h',
+      'd3dkmthk.h'
+    )
+    $missingDdiHeader = $false
+    foreach ($header in $requiredDdiHeaders) {
+      $found = $false
+      foreach ($includeKind in @('um', 'shared')) {
+        if (Test-Path -LiteralPath (Join-Path $versionIncludeRoot (Join-Path $includeKind $header))) {
+          $found = $true
+          break
+        }
+      }
+      if (-not $found) {
+        $missingDdiHeader = $true
+        break
+      }
+    }
+    if ($missingDdiHeader) {
+      continue
+    }
+
+    return [pscustomobject]@{
+      KitVersion = $version
+      IncludeRoot = (Resolve-ExistingPath -LiteralPath $versionIncludeRoot)
+      BuildRoot = (Resolve-ExistingPath -LiteralPath $versionBuildRoot)
+      DriverProps = $driverProps
+    }
+  }
+
+  return $null
+}
+
 function Get-WingetExe {
   [CmdletBinding()]
   param()
@@ -360,6 +470,52 @@ function Get-WingetExe {
   }
 
   return $null
+}
+
+function Get-WingetPackageVersionsForKit {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$WingetExe,
+    [Parameter(Mandatory = $true)]
+    [string]$WingetId,
+    [Parameter(Mandatory = $true)]
+    [string]$PreferredKitVersion
+  )
+
+  $preferredVersion = ConvertTo-VersionSafe -VersionText $PreferredKitVersion
+  if ($null -eq $preferredVersion) {
+    return @()
+  }
+
+  try {
+    $output = & $WingetExe show --id $WingetId --exact --versions --source winget --accept-source-agreements 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      return @()
+    }
+  } catch {
+    Write-ToolchainLog -Level WARN -Message "Failed to query winget versions for '$WingetId': $($_.Exception.Message)"
+    return @()
+  }
+
+  $versions = @()
+  foreach ($line in @($output)) {
+    $text = ([string]$line).Trim()
+    if ($text -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+      continue
+    }
+    $version = ConvertTo-VersionSafe -VersionText $text
+    if ($null -ne $version -and $version.Build -eq $preferredVersion.Build) {
+      $versions += $version
+    }
+  }
+
+  return @(
+    $versions |
+      Sort-Object -Descending |
+      ForEach-Object { $_.ToString() } |
+      Select-Object -Unique
+  )
 }
 
 function Get-ChocoExe {
@@ -568,7 +724,9 @@ function Ensure-WindowsKitToolchain {
   )
 
   $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
-  if ($null -ne $toolchain) {
+  $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
+  if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
+    $toolchain.WindowsKits.DriverBuild = $driverBuildSupport
     return $toolchain
   }
 
@@ -576,12 +734,15 @@ function Ensure-WindowsKitToolchain {
   $inf2cat = Resolve-WindowsKitTool -ToolName 'Inf2Cat.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference -RequireWin7Inf2Cat
   $signtool = Resolve-WindowsKitTool -ToolName 'signtool.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference
 
-  $needsWdk = ($null -eq $inf2cat)
-  $needsSdk = ($null -eq $signtool)
+  $needsDriverBuildSupport = ($null -eq $driverBuildSupport)
+  $needsWdk = ($null -eq $inf2cat -or $needsDriverBuildSupport)
+  $needsSdk = ($null -eq $signtool -or $needsDriverBuildSupport)
 
   $missing = @()
   if ($needsWdk) { $missing += 'Inf2Cat.exe (WDK)' }
   if ($needsSdk) { $missing += 'signtool.exe (Windows SDK)' }
+  if ($needsDriverBuildSupport) { $missing += "complete WDK build support (headers + MSBuild integration for $PreferredWdkKitVersion)" }
+  $missing = @($missing | Select-Object -Unique)
 
   if (-not (Test-IsAdministrator)) {
     throw @"
@@ -605,16 +766,29 @@ Remediation:
     }
 
     $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
-    if ($null -ne $toolchain) {
+    $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
+    if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
+      $toolchain.WindowsKits.DriverBuild = $driverBuildSupport
       return $toolchain
     }
   }
 
   # winget versions for SDK/WDK installers do not always match the installed Kit version exactly.
+  $preferredVersion = ConvertTo-VersionSafe -VersionText $PreferredWdkKitVersion
+  $preferredBuild = if ($null -ne $preferredVersion) { $preferredVersion.Build } else { $null }
+  $discoveredWingetVersions = @()
+  if ($null -ne $winget) {
+    $discoveredWingetVersions += Get-WingetPackageVersionsForKit -WingetExe $winget -WingetId $PreferredWdkWingetId -PreferredKitVersion $PreferredWdkKitVersion
+    $discoveredWingetVersions += Get-WingetPackageVersionsForKit -WingetExe $winget -WingetId 'Microsoft.WindowsSDK' -PreferredKitVersion $PreferredWdkKitVersion
+  }
   $versionCandidates = @(
+    $discoveredWingetVersions,
+    ($preferredBuild | ForEach-Object { if ($_ -ne $null) { "10.0.$_.2428" } }),
+    ($preferredBuild | ForEach-Object { if ($_ -ne $null) { "10.1.$_.2428" } }),
+    ($preferredBuild | ForEach-Object { if ($_ -ne $null) { "10.1.$_.382" } }),
     $PreferredWdkKitVersion,
     ($PreferredWdkKitVersion -replace '^10\.0\.', '10.1.'),
-    ((ConvertTo-VersionSafe -VersionText $PreferredWdkKitVersion) | ForEach-Object { if ($_ -ne $null) { "10.1.$($_.Build).1" } })
+    ($preferredBuild | ForEach-Object { if ($_ -ne $null) { "10.1.$_.1" } })
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
   # Last resort: install whatever winget considers "latest" if we can't match the pinned version string.
   $versionCandidates += $null
@@ -656,12 +830,21 @@ Remediation:
     }
 
     $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
-    if ($null -ne $toolchain) {
+    $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
+    if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
+      $toolchain.WindowsKits.DriverBuild = $driverBuildSupport
       return $toolchain
     }
 
-    $needsWdk = ($null -eq (Resolve-WindowsKitTool -ToolName 'Inf2Cat.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference -RequireWin7Inf2Cat))
-    $needsSdk = ($null -eq (Resolve-WindowsKitTool -ToolName 'signtool.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference))
+    $needsDriverBuildSupport = ($null -eq $driverBuildSupport)
+    $needsWdk = (
+      $null -eq (Resolve-WindowsKitTool -ToolName 'Inf2Cat.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference -RequireWin7Inf2Cat) -or
+      $needsDriverBuildSupport
+    )
+    $needsSdk = (
+      $null -eq (Resolve-WindowsKitTool -ToolName 'signtool.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference) -or
+      $needsDriverBuildSupport
+    )
     if (-not $needsWdk -and -not $needsSdk) {
       break
     }
@@ -677,7 +860,9 @@ Remediation:
     try {
       Install-WdkViaChocolatey
       $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
-      if ($null -ne $toolchain) {
+      $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
+      if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
+        $toolchain.WindowsKits.DriverBuild = $driverBuildSupport
         return $toolchain
       }
     } catch {
@@ -691,6 +876,7 @@ Windows driver toolchain tooling is still missing after installation attempts.
 Expected tools:
   - Inf2Cat.exe (WDK; must support /os:7_X86,7_X64)
   - signtool.exe (Windows SDK)
+  - WDK kernel/DDI headers and Visual Studio driver build integration for $PreferredWdkKitVersion
 
 Remediation:
   1. Install the Windows SDK and WDK manually and ensure they install under:

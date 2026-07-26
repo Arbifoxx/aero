@@ -120,6 +120,22 @@ typedef struct _LUID {
   #endif
 #endif
 
+// `__stdcall` is a distinct function-pointer type only on x86 Windows and on
+// the portable x86/x64 definitions above. MSVC x64 and non-x86 portable builds
+// use a single effective calling convention, so template helpers must not
+// declare both stdcall and default specializations there.
+#if defined(_WIN32)
+  #if defined(_M_IX86)
+    #define AEROGPU_D3D9_STDCALL_TYPE_DISTINCT 1
+  #else
+    #define AEROGPU_D3D9_STDCALL_TYPE_DISTINCT 0
+  #endif
+#elif defined(__i386__) || defined(__x86_64__)
+  #define AEROGPU_D3D9_STDCALL_TYPE_DISTINCT 1
+#else
+  #define AEROGPU_D3D9_STDCALL_TYPE_DISTINCT 0
+#endif
+
 // Windows-style HRESULT helpers (portable builds).
 //
 // When building on Windows, <windows.h> provides these macros. For portable host
@@ -196,8 +212,9 @@ typedef struct _LUID {
 
 #if defined(_WIN32)
   // Portable mode on Windows: rely on the Windows SDK for the classic D3D9 type
-  // definitions (e.g. D3DMATRIX/D3DTRANSFORMSTATETYPE) so host-side tests can
+  // and capability definitions (e.g. D3DMATRIX/D3DCAPS9) so host-side tests can
   // compile without the WDK.
+  #include <d3d9caps.h>
   #include <d3d9types.h>
 #endif
 
@@ -792,6 +809,7 @@ typedef enum _D3DDDIPRIMITIVETYPE {
 //
 // These mirror the public D3D9 API structs from d3d9types.h so host-side tests
 // can compile without the Windows SDK/WDK.
+#if !defined(_WIN32)
 typedef enum _D3DBASISTYPE {
   D3DBASIS_BEZIER = 0,
   D3DBASIS_BSPLINE = 1,
@@ -818,6 +836,7 @@ typedef struct _D3DTRIPATCH_INFO {
   D3DBASISTYPE Basis;
   D3DDEGREETYPE Degree;
 } D3DTRIPATCH_INFO;
+#endif
 
 typedef struct _D3DDDIVIEWPORTINFO {
   float X;

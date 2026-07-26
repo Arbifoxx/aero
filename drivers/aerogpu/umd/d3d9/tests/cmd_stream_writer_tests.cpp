@@ -111,6 +111,7 @@ struct HasPfnCreateStateBlock<T, std::void_t<decltype(&T::pfnCreateStateBlock)>>
 
 template <typename Fn>
 struct FnTraits;
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct FnTraits<Ret(*)(Args...)> {
   using RetT = Ret;
@@ -119,6 +120,7 @@ struct FnTraits<Ret(*)(Args...)> {
   template <size_t I>
   using Arg = std::tuple_element_t<I, ArgsTuple>;
 };
+#endif
 template <typename Ret, typename... Args>
 struct FnTraits<Ret(__stdcall*)(Args...)> {
   using RetT = Ret;

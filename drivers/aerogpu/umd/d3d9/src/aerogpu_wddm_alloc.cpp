@@ -18,10 +18,12 @@ struct fn_first_param<Ret(__stdcall*)(Arg0, Rest...)> {
   using type = Arg0;
 };
 
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename Arg0, typename... Rest>
 struct fn_first_param<Ret(*)(Arg0, Rest...)> {
   using type = Arg0;
 };
+#endif
 
 template <typename T>
 struct is_function_pointer

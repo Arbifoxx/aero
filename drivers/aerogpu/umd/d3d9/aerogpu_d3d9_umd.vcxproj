@@ -23,7 +23,7 @@
     <ProjectGuid>{5F7C8B24-8F96-4C3C-9D5C-A6E3C5E2BBE4}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>aerogpu_d3d9_umd</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

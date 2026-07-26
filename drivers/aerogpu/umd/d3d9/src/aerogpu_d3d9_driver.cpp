@@ -1382,24 +1382,7 @@ std::array<uint64_t, 4> d3d9_stub_trace_args(const Args&... args) {
       (void)trace.ret(stub_hr);                                                                   \
       return Ret{};                                                                               \
     }                                                                                             \
-  };                                                                                              \
-  template <typename Ret, typename... Args>                                                      \
-  struct aerogpu_d3d9_stub_##member<Ret(*)(Args...)> {                                            \
-    static Ret member(Args... args) {                                                             \
-      AEROGPU_D3D9_STUB_LOG_ONCE();                                                              \
-      const auto packed = d3d9_stub_trace_args(args...);                                         \
-      D3d9TraceCall trace(trace_func, packed[0], packed[1], packed[2], packed[3]);               \
-      if constexpr (std::is_same_v<Ret, void>) {                                                  \
-        (void)trace.ret(stub_hr);                                                                 \
-        return;                                                                                   \
-      }                                                                                           \
-      if constexpr (std::is_same_v<Ret, HRESULT>) {                                               \
-        return trace.ret(stub_hr);                                                                \
-      }                                                                                           \
-      (void)trace.ret(stub_hr);                                                                   \
-      return Ret{};                                                                               \
-    }                                                                                             \
-  }
+  };
 
 // Same as AEROGPU_D3D9_DEFINE_DDI_STUB, but without the "stub" log-once and with
 // a name that does not include "(stub)" in trace strings. These entrypoints are
@@ -1423,23 +1406,7 @@ std::array<uint64_t, 4> d3d9_stub_trace_args(const Args&... args) {
       (void)trace.ret(ok_hr);                                                                      \
       return Ret{};                                                                                \
     }                                                                                              \
-  };                                                                                               \
-  template <typename Ret, typename... Args>                                                       \
-  struct aerogpu_d3d9_noop_##member<Ret(*)(Args...)> {                                             \
-    static Ret member(Args... args) {                                                              \
-      const auto packed = d3d9_stub_trace_args(args...);                                          \
-      D3d9TraceCall trace(trace_func, packed[0], packed[1], packed[2], packed[3]);                \
-      if constexpr (std::is_same_v<Ret, void>) {                                                   \
-        (void)trace.ret(ok_hr);                                                                    \
-        return;                                                                                    \
-      }                                                                                            \
-      if constexpr (std::is_same_v<Ret, HRESULT>) {                                                \
-        return trace.ret(ok_hr);                                                                   \
-      }                                                                                            \
-      (void)trace.ret(ok_hr);                                                                      \
-      return Ret{};                                                                                \
-    }                                                                                              \
-  }
+  };
 
 // Stubbed entrypoints: keep these non-NULL so the Win7 runtime can call into the
 // UMD without crashing. See `drivers/aerogpu/umd/d3d9/README.md`.
@@ -1517,6 +1484,7 @@ struct aerogpu_d3d9_ddi_thunk<Ret(__stdcall*)(Args...), Impl> {
   }
 };
 
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args, auto Impl>
 struct aerogpu_d3d9_ddi_thunk<Ret(*)(Args...), Impl> {
   using impl_return_t = decltype(Impl(std::declval<Args>()...));
@@ -1550,6 +1518,7 @@ struct aerogpu_d3d9_ddi_thunk<Ret(*)(Args...), Impl> {
     }
   }
 };
+#endif
 
 uint64_t monotonic_ms() {
 #if defined(_WIN32)
@@ -8169,10 +8138,12 @@ struct fn_first_param<Ret(__stdcall*)(Arg0, Rest...)> {
   using type = Arg0;
 };
 
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename Arg0, typename... Rest>
 struct fn_first_param<Ret(*)(Arg0, Rest...)> {
   using type = Arg0;
 };
+#endif
 
 template <typename T, typename = void>
 struct has_member_hContext : std::false_type {};
@@ -16199,12 +16170,14 @@ struct aerogpu_d3d9_impl_pfnCreateStateBlock<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_create_state_block_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnCreateStateBlock<Ret(*)(Args...)> {
   static Ret pfnCreateStateBlock(Args... args) {
     return static_cast<Ret>(device_create_state_block_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnDeleteStateBlock;
@@ -16214,12 +16187,14 @@ struct aerogpu_d3d9_impl_pfnDeleteStateBlock<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_delete_state_block_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnDeleteStateBlock<Ret(*)(Args...)> {
   static Ret pfnDeleteStateBlock(Args... args) {
     return static_cast<Ret>(device_delete_state_block_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnCaptureStateBlock;
@@ -16229,12 +16204,14 @@ struct aerogpu_d3d9_impl_pfnCaptureStateBlock<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_capture_state_block_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnCaptureStateBlock<Ret(*)(Args...)> {
   static Ret pfnCaptureStateBlock(Args... args) {
     return static_cast<Ret>(device_capture_state_block_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnApplyStateBlock;
@@ -16244,12 +16221,14 @@ struct aerogpu_d3d9_impl_pfnApplyStateBlock<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_apply_state_block_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnApplyStateBlock<Ret(*)(Args...)> {
   static Ret pfnApplyStateBlock(Args... args) {
     return static_cast<Ret>(device_apply_state_block_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnBeginStateBlock;
@@ -16259,12 +16238,14 @@ struct aerogpu_d3d9_impl_pfnBeginStateBlock<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_begin_state_block_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnBeginStateBlock<Ret(*)(Args...)> {
   static Ret pfnBeginStateBlock(Args... args) {
     return static_cast<Ret>(device_begin_state_block_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnEndStateBlock;
@@ -16274,12 +16255,14 @@ struct aerogpu_d3d9_impl_pfnEndStateBlock<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_end_state_block_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnEndStateBlock<Ret(*)(Args...)> {
   static Ret pfnEndStateBlock(Args... args) {
     return static_cast<Ret>(device_end_state_block_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnValidateDevice;
@@ -16289,12 +16272,14 @@ struct aerogpu_d3d9_impl_pfnValidateDevice<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_validate_device_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnValidateDevice<Ret(*)(Args...)> {
   static Ret pfnValidateDevice(Args... args) {
     return static_cast<Ret>(device_validate_device_dispatch(args...));
   }
 };
+#endif
 
 // -----------------------------------------------------------------------------
 // Minimal D3D9 "Get*" state DDIs
@@ -18815,12 +18800,14 @@ struct aerogpu_d3d9_impl_pfnSetTextureStageState<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_texture_stage_state_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetTextureStageState<Ret(*)(Args...)> {
   static Ret pfnSetTextureStageState(Args... args) {
     return static_cast<Ret>(device_set_texture_stage_state_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetTextureStageState;
@@ -18830,12 +18817,14 @@ struct aerogpu_d3d9_impl_pfnGetTextureStageState<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_texture_stage_state_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetTextureStageState<Ret(*)(Args...)> {
   static Ret pfnGetTextureStageState(Args... args) {
     return static_cast<Ret>(device_get_texture_stage_state_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetTransform;
@@ -18845,12 +18834,14 @@ struct aerogpu_d3d9_impl_pfnSetTransform<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_transform_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetTransform<Ret(*)(Args...)> {
   static Ret pfnSetTransform(Args... args) {
     return static_cast<Ret>(device_set_transform_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnMultiplyTransform;
@@ -18860,12 +18851,14 @@ struct aerogpu_d3d9_impl_pfnMultiplyTransform<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_multiply_transform_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnMultiplyTransform<Ret(*)(Args...)> {
   static Ret pfnMultiplyTransform(Args... args) {
     return static_cast<Ret>(device_multiply_transform_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetTransform;
@@ -18875,12 +18868,14 @@ struct aerogpu_d3d9_impl_pfnGetTransform<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_transform_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetTransform<Ret(*)(Args...)> {
   static Ret pfnGetTransform(Args... args) {
     return static_cast<Ret>(device_get_transform_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetClipPlane;
@@ -18890,12 +18885,14 @@ struct aerogpu_d3d9_impl_pfnSetClipPlane<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_clip_plane_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetClipPlane<Ret(*)(Args...)> {
   static Ret pfnSetClipPlane(Args... args) {
     return static_cast<Ret>(device_set_clip_plane_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetClipPlane;
@@ -18905,12 +18902,14 @@ struct aerogpu_d3d9_impl_pfnGetClipPlane<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_clip_plane_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetClipPlane<Ret(*)(Args...)> {
   static Ret pfnGetClipPlane(Args... args) {
     return static_cast<Ret>(device_get_clip_plane_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetMaterial;
@@ -18920,12 +18919,14 @@ struct aerogpu_d3d9_impl_pfnSetMaterial<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_material_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetMaterial<Ret(*)(Args...)> {
   static Ret pfnSetMaterial(Args... args) {
     return static_cast<Ret>(device_set_material_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetMaterial;
@@ -18935,12 +18936,14 @@ struct aerogpu_d3d9_impl_pfnGetMaterial<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_material_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetMaterial<Ret(*)(Args...)> {
   static Ret pfnGetMaterial(Args... args) {
     return static_cast<Ret>(device_get_material_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetLight;
@@ -18950,12 +18953,14 @@ struct aerogpu_d3d9_impl_pfnSetLight<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_light_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetLight<Ret(*)(Args...)> {
   static Ret pfnSetLight(Args... args) {
     return static_cast<Ret>(device_set_light_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetLight;
@@ -18965,12 +18970,14 @@ struct aerogpu_d3d9_impl_pfnGetLight<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_light_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetLight<Ret(*)(Args...)> {
   static Ret pfnGetLight(Args... args) {
     return static_cast<Ret>(device_get_light_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnLightEnable;
@@ -18980,12 +18987,14 @@ struct aerogpu_d3d9_impl_pfnLightEnable<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_light_enable_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnLightEnable<Ret(*)(Args...)> {
   static Ret pfnLightEnable(Args... args) {
     return static_cast<Ret>(device_light_enable_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetLightEnable;
@@ -18995,12 +19004,14 @@ struct aerogpu_d3d9_impl_pfnGetLightEnable<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_light_enable_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetLightEnable<Ret(*)(Args...)> {
   static Ret pfnGetLightEnable(Args... args) {
     return static_cast<Ret>(device_get_light_enable_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetPaletteEntries;
@@ -19010,12 +19021,14 @@ struct aerogpu_d3d9_impl_pfnSetPaletteEntries<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_palette_entries_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetPaletteEntries<Ret(*)(Args...)> {
   static Ret pfnSetPaletteEntries(Args... args) {
     return static_cast<Ret>(device_set_palette_entries_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetPaletteEntries;
@@ -19025,12 +19038,14 @@ struct aerogpu_d3d9_impl_pfnGetPaletteEntries<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_palette_entries_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetPaletteEntries<Ret(*)(Args...)> {
   static Ret pfnGetPaletteEntries(Args... args) {
     return static_cast<Ret>(device_get_palette_entries_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetCurrentTexturePalette;
@@ -19040,12 +19055,14 @@ struct aerogpu_d3d9_impl_pfnSetCurrentTexturePalette<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_current_texture_palette_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetCurrentTexturePalette<Ret(*)(Args...)> {
   static Ret pfnSetCurrentTexturePalette(Args... args) {
     return static_cast<Ret>(device_set_current_texture_palette_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetCurrentTexturePalette;
@@ -19055,12 +19072,14 @@ struct aerogpu_d3d9_impl_pfnGetCurrentTexturePalette<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_current_texture_palette_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetCurrentTexturePalette<Ret(*)(Args...)> {
   static Ret pfnGetCurrentTexturePalette(Args... args) {
     return static_cast<Ret>(device_get_current_texture_palette_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetClipStatus;
@@ -19070,12 +19089,14 @@ struct aerogpu_d3d9_impl_pfnSetClipStatus<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_clip_status_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetClipStatus<Ret(*)(Args...)> {
   static Ret pfnSetClipStatus(Args... args) {
     return static_cast<Ret>(device_set_clip_status_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetClipStatus;
@@ -19085,12 +19106,14 @@ struct aerogpu_d3d9_impl_pfnGetClipStatus<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_clip_status_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetClipStatus<Ret(*)(Args...)> {
   static Ret pfnGetClipStatus(Args... args) {
     return static_cast<Ret>(device_get_clip_status_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetGammaRamp;
@@ -19100,12 +19123,14 @@ struct aerogpu_d3d9_impl_pfnSetGammaRamp<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_gamma_ramp_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetGammaRamp<Ret(*)(Args...)> {
   static Ret pfnSetGammaRamp(Args... args) {
     return static_cast<Ret>(device_set_gamma_ramp_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetGammaRamp;
@@ -19115,12 +19140,14 @@ struct aerogpu_d3d9_impl_pfnGetGammaRamp<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_gamma_ramp_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetGammaRamp<Ret(*)(Args...)> {
   static Ret pfnGetGammaRamp(Args... args) {
     return static_cast<Ret>(device_get_gamma_ramp_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetPriority;
@@ -19130,12 +19157,14 @@ struct aerogpu_d3d9_impl_pfnSetPriority<Ret(__stdcall*)(Args...)> {
     return device_set_priority_dispatch<Ret>(args...);
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetPriority<Ret(*)(Args...)> {
   static Ret pfnSetPriority(Args... args) {
     return device_set_priority_dispatch<Ret>(args...);
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetPriority;
@@ -19145,12 +19174,14 @@ struct aerogpu_d3d9_impl_pfnGetPriority<Ret(__stdcall*)(Args...)> {
     return device_get_priority_dispatch<Ret>(args...);
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetPriority<Ret(*)(Args...)> {
   static Ret pfnGetPriority(Args... args) {
     return device_get_priority_dispatch<Ret>(args...);
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetAutoGenFilterType;
@@ -19160,12 +19191,14 @@ struct aerogpu_d3d9_impl_pfnSetAutoGenFilterType<Ret(__stdcall*)(Args...)> {
     return device_set_auto_gen_filter_type_dispatch<Ret>(args...);
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetAutoGenFilterType<Ret(*)(Args...)> {
   static Ret pfnSetAutoGenFilterType(Args... args) {
     return device_set_auto_gen_filter_type_dispatch<Ret>(args...);
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetAutoGenFilterType;
@@ -19175,12 +19208,14 @@ struct aerogpu_d3d9_impl_pfnGetAutoGenFilterType<Ret(__stdcall*)(Args...)> {
     return device_get_auto_gen_filter_type_dispatch<Ret>(args...);
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetAutoGenFilterType<Ret(*)(Args...)> {
   static Ret pfnGetAutoGenFilterType(Args... args) {
     return device_get_auto_gen_filter_type_dispatch<Ret>(args...);
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGenerateMipSubLevels;
@@ -19190,12 +19225,14 @@ struct aerogpu_d3d9_impl_pfnGenerateMipSubLevels<Ret(__stdcall*)(Args...)> {
     return device_generate_mip_sub_levels_dispatch<Ret>(args...);
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGenerateMipSubLevels<Ret(*)(Args...)> {
   static Ret pfnGenerateMipSubLevels(Args... args) {
     return device_generate_mip_sub_levels_dispatch<Ret>(args...);
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetSoftwareVertexProcessing;
@@ -19205,12 +19242,14 @@ struct aerogpu_d3d9_impl_pfnSetSoftwareVertexProcessing<Ret(__stdcall*)(Args...)
     return static_cast<Ret>(device_set_software_vertex_processing_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetSoftwareVertexProcessing<Ret(*)(Args...)> {
   static Ret pfnSetSoftwareVertexProcessing(Args... args) {
     return static_cast<Ret>(device_set_software_vertex_processing_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetCursorProperties;
@@ -19220,12 +19259,14 @@ struct aerogpu_d3d9_impl_pfnSetCursorProperties<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_cursor_properties_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetCursorProperties<Ret(*)(Args...)> {
   static Ret pfnSetCursorProperties(Args... args) {
     return static_cast<Ret>(device_set_cursor_properties_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetCursorPosition;
@@ -19235,12 +19276,14 @@ struct aerogpu_d3d9_impl_pfnSetCursorPosition<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_cursor_position_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetCursorPosition<Ret(*)(Args...)> {
   static Ret pfnSetCursorPosition(Args... args) {
     return static_cast<Ret>(device_set_cursor_position_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnShowCursor;
@@ -19250,12 +19293,14 @@ struct aerogpu_d3d9_impl_pfnShowCursor<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_show_cursor_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnShowCursor<Ret(*)(Args...)> {
   static Ret pfnShowCursor(Args... args) {
     return static_cast<Ret>(device_show_cursor_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetSoftwareVertexProcessing;
@@ -19265,12 +19310,14 @@ struct aerogpu_d3d9_impl_pfnGetSoftwareVertexProcessing<Ret(__stdcall*)(Args...)
     return static_cast<Ret>(device_get_software_vertex_processing_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetSoftwareVertexProcessing<Ret(*)(Args...)> {
   static Ret pfnGetSoftwareVertexProcessing(Args... args) {
     return static_cast<Ret>(device_get_software_vertex_processing_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetNPatchMode;
@@ -19280,12 +19327,14 @@ struct aerogpu_d3d9_impl_pfnSetNPatchMode<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_npatch_mode_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetNPatchMode<Ret(*)(Args...)> {
   static Ret pfnSetNPatchMode(Args... args) {
     return static_cast<Ret>(device_set_npatch_mode_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetNPatchMode;
@@ -19295,12 +19344,14 @@ struct aerogpu_d3d9_impl_pfnGetNPatchMode<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_npatch_mode_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetNPatchMode<Ret(*)(Args...)> {
   static Ret pfnGetNPatchMode(Args... args) {
     return static_cast<Ret>(device_get_npatch_mode_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetStreamSourceFreq;
@@ -19310,12 +19361,14 @@ struct aerogpu_d3d9_impl_pfnSetStreamSourceFreq<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_stream_source_freq_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetStreamSourceFreq<Ret(*)(Args...)> {
   static Ret pfnSetStreamSourceFreq(Args... args) {
     return static_cast<Ret>(device_set_stream_source_freq_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetStreamSourceFreq;
@@ -19325,12 +19378,14 @@ struct aerogpu_d3d9_impl_pfnGetStreamSourceFreq<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_stream_source_freq_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetStreamSourceFreq<Ret(*)(Args...)> {
   static Ret pfnGetStreamSourceFreq(Args... args) {
     return static_cast<Ret>(device_get_stream_source_freq_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetViewport;
@@ -19340,12 +19395,14 @@ struct aerogpu_d3d9_impl_pfnGetViewport<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_viewport_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetViewport<Ret(*)(Args...)> {
   static Ret pfnGetViewport(Args... args) {
     return static_cast<Ret>(device_get_viewport_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetScissorRect;
@@ -19355,12 +19412,14 @@ struct aerogpu_d3d9_impl_pfnGetScissorRect<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_scissor_rect_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetScissorRect<Ret(*)(Args...)> {
   static Ret pfnGetScissorRect(Args... args) {
     return static_cast<Ret>(device_get_scissor_rect_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetRenderTarget;
@@ -19370,12 +19429,14 @@ struct aerogpu_d3d9_impl_pfnGetRenderTarget<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_render_target_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetRenderTarget<Ret(*)(Args...)> {
   static Ret pfnGetRenderTarget(Args... args) {
     return static_cast<Ret>(device_get_render_target_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetDepthStencil;
@@ -19385,12 +19446,14 @@ struct aerogpu_d3d9_impl_pfnGetDepthStencil<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_depth_stencil_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetDepthStencil<Ret(*)(Args...)> {
   static Ret pfnGetDepthStencil(Args... args) {
     return static_cast<Ret>(device_get_depth_stencil_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetTexture;
@@ -19400,12 +19463,14 @@ struct aerogpu_d3d9_impl_pfnGetTexture<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_texture_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetTexture<Ret(*)(Args...)> {
   static Ret pfnGetTexture(Args... args) {
     return static_cast<Ret>(device_get_texture_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetSamplerState;
@@ -19415,12 +19480,14 @@ struct aerogpu_d3d9_impl_pfnGetSamplerState<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_sampler_state_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetSamplerState<Ret(*)(Args...)> {
   static Ret pfnGetSamplerState(Args... args) {
     return static_cast<Ret>(device_get_sampler_state_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetRenderState;
@@ -19430,12 +19497,14 @@ struct aerogpu_d3d9_impl_pfnGetRenderState<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_render_state_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetRenderState<Ret(*)(Args...)> {
   static Ret pfnGetRenderState(Args... args) {
     return static_cast<Ret>(device_get_render_state_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetStreamSource;
@@ -19445,12 +19514,14 @@ struct aerogpu_d3d9_impl_pfnGetStreamSource<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_stream_source_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetStreamSource<Ret(*)(Args...)> {
   static Ret pfnGetStreamSource(Args... args) {
     return static_cast<Ret>(device_get_stream_source_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetIndices;
@@ -19460,12 +19531,14 @@ struct aerogpu_d3d9_impl_pfnGetIndices<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_indices_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetIndices<Ret(*)(Args...)> {
   static Ret pfnGetIndices(Args... args) {
     return static_cast<Ret>(device_get_indices_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetShader;
@@ -19475,12 +19548,14 @@ struct aerogpu_d3d9_impl_pfnGetShader<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_shader_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetShader<Ret(*)(Args...)> {
   static Ret pfnGetShader(Args... args) {
     return static_cast<Ret>(device_get_shader_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetShaderConstF;
@@ -19490,12 +19565,14 @@ struct aerogpu_d3d9_impl_pfnGetShaderConstF<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_shader_const_f_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetShaderConstF<Ret(*)(Args...)> {
   static Ret pfnGetShaderConstF(Args... args) {
     return static_cast<Ret>(device_get_shader_const_f_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetShaderConstI;
@@ -19505,12 +19582,14 @@ struct aerogpu_d3d9_impl_pfnSetShaderConstI<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_shader_const_i_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetShaderConstI<Ret(*)(Args...)> {
   static Ret pfnSetShaderConstI(Args... args) {
     return static_cast<Ret>(device_set_shader_const_i_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetShaderConstI;
@@ -19520,12 +19599,14 @@ struct aerogpu_d3d9_impl_pfnGetShaderConstI<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_shader_const_i_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetShaderConstI<Ret(*)(Args...)> {
   static Ret pfnGetShaderConstI(Args... args) {
     return static_cast<Ret>(device_get_shader_const_i_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnSetShaderConstB;
@@ -19535,12 +19616,14 @@ struct aerogpu_d3d9_impl_pfnSetShaderConstB<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_set_shader_const_b_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnSetShaderConstB<Ret(*)(Args...)> {
   static Ret pfnSetShaderConstB(Args... args) {
     return static_cast<Ret>(device_set_shader_const_b_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetShaderConstB;
@@ -19550,12 +19633,14 @@ struct aerogpu_d3d9_impl_pfnGetShaderConstB<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_shader_const_b_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetShaderConstB<Ret(*)(Args...)> {
   static Ret pfnGetShaderConstB(Args... args) {
     return static_cast<Ret>(device_get_shader_const_b_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetFVF;
@@ -19565,12 +19650,14 @@ struct aerogpu_d3d9_impl_pfnGetFVF<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_fvf_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetFVF<Ret(*)(Args...)> {
   static Ret pfnGetFVF(Args... args) {
     return static_cast<Ret>(device_get_fvf_dispatch(args...));
   }
 };
+#endif
 
 template <typename Fn>
 struct aerogpu_d3d9_impl_pfnGetVertexDecl;
@@ -19580,12 +19667,14 @@ struct aerogpu_d3d9_impl_pfnGetVertexDecl<Ret(__stdcall*)(Args...)> {
     return static_cast<Ret>(device_get_vertex_decl_dispatch(args...));
   }
 };
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetVertexDecl<Ret(*)(Args...)> {
   static Ret pfnGetVertexDecl(Args... args) {
     return static_cast<Ret>(device_get_vertex_decl_dispatch(args...));
   }
 };
+#endif
 
 #endif // _WIN32 && AEROGPU_D3D9_USE_WDK_DDI
 
@@ -25962,12 +26051,14 @@ struct aerogpu_d3d9_impl_pfnGetRasterStatus<Ret(__stdcall*)(Args...)> {
   }
 };
 
+#if AEROGPU_D3D9_STDCALL_TYPE_DISTINCT
 template <typename Ret, typename... Args>
 struct aerogpu_d3d9_impl_pfnGetRasterStatus<Ret(*)(Args...)> {
   static Ret pfnGetRasterStatus(Args... args) {
     return static_cast<Ret>(device_get_raster_status_dispatch(args...));
   }
 };
+#endif
 
 } // namespace
 #endif
@@ -28072,7 +28163,6 @@ HRESULT AEROGPU_D3D9_CALL OpenAdapter(
         }
       }
     }
-  }
     if (hdc) {
       ReleaseDC(nullptr, hdc);
     }
