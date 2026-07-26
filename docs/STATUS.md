@@ -16,7 +16,7 @@ bootloader bring-up commit is `f70373d91`.
 | AeroGPU PCI identity | validated on host | `A3A0:0001` at `00:07.0`; observed BAR0 `0xe0010000`, BAR1 `0xe4000000` |
 | AeroGPU protocol/device suites | validated on host | complete `aero-protocol` and `aero-devices-gpu` test suites pass |
 | Native AeroGPU wgpu executor | builds/tests | native smoke test passes on Metal |
-| Real Windows 7 ISO boot | partial, blocked before UI | reaches 32-bit protected bootloader code; no Windows Boot Manager pixels yet |
+| Real Windows 7 ISO boot | partial, visible boot UI | renders “Windows is loading files…” and continues protected-mode loading; setup UI not reached |
 | Win7 KMD load / BAR-ring-fence traffic | not reached | extended boot run has not reached PnP |
 | Guest D3D9 triangle | not reached | in-tree `d3d9ex_triangle` is ready but cannot run until guest boot and driver install |
 | DWM / Aero Glass | not validated | depends on the same guest milestones |
@@ -47,11 +47,22 @@ QEMU reference:
 - callback-table owner pointer: `[0x0002530c] = 0x000252f8`
 - protected callback global: `[0x00495e08] = 0x000252f8`
 
-An optimized run now passes the old crash and reaches 100,000,000 instructions
-without an exception. At that limit it is still executing the low real-mode
-transition/BIOS-callback path and the 720×400 framebuffer remains black with a
-top-left cursor. This is the current observation boundary: it proves substantial
-forward progress, but not an installer UI or a completed Windows boot.
+An optimized run now passes the old crash. It initially appeared to remain in
+the low real-mode transition/BIOS-callback path, but that code was polling BIOS
+INT 1Ah for a timer tick. Aero deterministically models one retired instruction
+as one 3 GHz TSC cycle, so 100,000,000 interpreted instructions advance only
+33 ms of guest time—less than one 54.9 ms BIOS tick—even when they take roughly
+90 seconds on the host. At the first virtual tick the loader immediately
+continues.
+
+Both native frontends now accept a diagnostic `--guest-cpu-hz HZ` override.
+With `--guest-cpu-hz 3000000`, the same unmodified ISO renders
+“Windows is loading files…”, completes that text-mode loading screen, clears
+the display, and continues sustained protected-mode processing in populated
+high memory. A further 320,000,000-instruction accelerated-time continuation
+has not faulted, but has not yet entered the 64-bit kernel or displayed the
+graphical setup UI. The override changes guest-visible timing and is a
+bring-up tool, not a performance or compatibility fix.
 
 The comparison also found Aero incorrectly allowed `CR0.ET` to read as zero.
 The reset state and CR0 write paths now keep this modern-CPU fixed bit set,
@@ -59,15 +70,16 @@ matching the reference `CR0=0x11` at the boundary. This is an architectural
 correction with a regression test. The later stack-address fix is what moved
 the boot boundary.
 
-The earliest next task is to determine whether the repeated low real-mode
-callback traffic is simply slow forward I/O progress or a new loop, compare
-its callback sequence and state with QEMU, and reach the first visible setup
-screen.
+The earliest next task is to finish the current protected-mode file/image
+processing, reach the 64-bit kernel transition, and determine whether the next
+boundary is CPU correctness, a missing device, or simply interpreter
+throughput. QEMU reaches the 64-bit kernel with the same ISO, so any later
+architectural divergence remains Aero-specific.
 
 The run now passes the earlier deterministic loader gaps for ENTER/LEAVE,
 PUSHFD/POPFD operand overrides, LES, indirect far JMP, RETFD stack width, and
 indirect jump-table offset widths. Each has a focused interpreter regression
 test.
 
-Therefore this status does not claim a visible Windows boot screen, driver
-initialization, a D3D9 triangle, or Aero Glass.
+Therefore this status claims a visible Windows bootloader screen, but not the
+graphical installer, driver initialization, a D3D9 triangle, or Aero Glass.

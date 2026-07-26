@@ -3,10 +3,10 @@
 This guide describes the native Apple Silicon frontend in `crates/aero-macos`.
 It is an experimental emulator, not a production replacement for QEMU,
 VirtualBox, VMware, or Parallels. As of 2026-07-25, Windows 7 passes the former
-32-bit bootloader callback crash, but an extended run still has not displayed
-the installer UI. The commands below create durable VM storage and launch the
-implemented path; they do not imply that a Windows installation can complete
-yet.
+32-bit bootloader callback crash and renders “Windows is loading files…”, but
+has not reached the graphical installer. The commands below create durable VM
+storage and launch the implemented path; they do not imply that a Windows
+installation can complete yet.
 
 ## The important mental model
 
@@ -75,6 +75,18 @@ scripts/aero-vm.sh set win7-lab --ram 3072
 scripts/aero-vm.sh start win7-lab --install --trace
 ```
 
+The current interpreter advances a deterministic 3 GHz clock by one cycle per
+retired instruction. Timer-polling boot code can therefore take far longer
+than expected. For bring-up only, accelerate virtual time with:
+
+```bash
+scripts/aero-vm.sh start win7-lab --install --trace -- \
+  --guest-cpu-hz 3000000
+```
+
+This changes the guest-visible TSC. It removes artificial timer waits but does
+not accelerate CPU instruction execution and is not representative timing.
+
 Use `--dry-run` to inspect the exact frontend command. Use `--headless` for a
 bounded diagnostic run:
 
@@ -92,8 +104,9 @@ using external storage tools.
 
 ## Expected install lifecycle
 
-Today, `start win7-lab --install` is expected to hit the documented early
-bootloader blocker. Once boot is fixed, the intended lifecycle is:
+Today, `start win7-lab --install` can reach the visible Windows file-loading
+screen, but a complete installation is not yet validated. The intended
+lifecycle is:
 
 1. Start with the ISO and disk using `--boot cd-first`.
 2. Install Windows onto the VM's `disk.raw`.
@@ -124,9 +137,9 @@ the D3D9Ex test result.
 
 ## Current limitations that affect VM choices
 
-- Windows setup has not reached a visible UI; the former null-callback crash
-  is fixed, and the current extended-run boundary is in low real-mode callback
-  traffic.
+- Windows reaches the visible “Windows is loading files…” bootloader screen,
+  then continues protected-mode processing; the graphical setup UI is not yet
+  reached.
 - One vCPU is the only recommended boot configuration.
 - Guest CPU execution is emulated and may remain slow even after GPU
   acceleration works.
@@ -143,16 +156,16 @@ switches. These currently provide summaries and logging guidance rather than a
 complete per-access protocol trace.
 
 The headless runner supports deterministic instruction limits, register
-diagnostics, physical-memory inspection/dumps, and bounded write watchpoints:
+diagnostics, physical-memory inspection/dumps, bounded read/write watchpoints,
+and the diagnostic clock override:
 
 ```bash
 target/release/aero-machine \
   --install-iso /path/to/windows.iso \
   --boot cdrom \
   --ram 1024 \
-  --max-insts 20376806 \
-  --watch-phys 0x495e08:4 \
-  --inspect-phys 0x495e08:16
+  --guest-cpu-hz 3000000 \
+  --max-insts 100000000
 ```
 
 `--dump-phys` output can contain proprietary guest bytes and must remain a

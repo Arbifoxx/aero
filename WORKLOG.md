@@ -128,3 +128,27 @@ pointer into a product workaround.
 Next: measure callback/I/O progress across longer runs and compare the
 real-mode callback sequence with QEMU to distinguish slow loading from the
 next deterministic loop.
+
+## 2026-07-25 — first visible Windows boot UI
+
+- Snapshot comparisons showed the apparent real-mode loop changed only its
+  transition stack and INT 1Ah result buffer.
+- The request block at `0x30000` contained BIOS interrupt vector `0x1a`.
+  Aero's BDA tick remained zero through 100,000,000 instructions because the
+  deterministic 3 GHz clock maps one retired instruction to one cycle.
+- The first BDA tick arrived after roughly 165,000,000 total instructions and
+  Boot Manager immediately left the polling loop. This proved the callback was
+  working and exposed virtual-time scaling as the apparent stall.
+- Added diagnostic `--guest-cpu-hz HZ` overrides to the headless and native
+  macOS frontends. The override is reapplied after native guest resets and is
+  explicitly reported as non-representative timing.
+- Continuing from a real snapshot at 3 MHz virtual TSC produced the first
+  visible Windows output: “Windows is loading files…” with its progress bar.
+  The screen later cleared while the guest continued protected-mode work in
+  newly populated high memory.
+- An additional 320,000,000 instructions under accelerated diagnostic time
+  completed without an exception. The graphical setup UI and 64-bit kernel
+  transition are not yet reached.
+
+Next: continue the protected-mode loading/decompression path to the long-mode
+transition, then compare that boundary with the QEMU reference.

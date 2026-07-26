@@ -52,6 +52,12 @@ Guest dumps can contain proprietary material and must not be committed.
 `--patch-phys-u32-at INSTRUCTIONS:ADDRESS:VALUE` is a counterfactual debugging
 tool only: it deliberately changes guest state and cannot establish a fix.
 
+The deterministic clock normally treats one retired instruction as one 3 GHz
+cycle. For boot paths that poll BIOS or platform timers, both native runners
+accept `--guest-cpu-hz HZ`. A lower diagnostic value such as `3000000`
+accelerates virtual time relative to interpreted instructions. It also changes
+the guest-visible TSC and must not be presented as representative timing.
+
 The native `--trace-*` switches currently emit periodic summaries or direct
 users to shared-layer tracing. They are not a complete per-MMIO/per-command
 capture. Guest protocol claims require KMD/debug-control output or shared-layer
