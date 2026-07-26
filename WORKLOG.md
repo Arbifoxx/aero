@@ -63,3 +63,42 @@ Next: instrument or breakpoint writes to guest physical `0x00495e08` and compare
 the loader initialization branch with a known-good PC BIOS boot. After the
 guest reaches PnP, capture KMD BAR discovery, ABI/features, ring enable,
 doorbells, fence IRQ/DPC completion, and finally run `d3d9ex_triangle`.
+
+## 2026-07-25 — callback initialization trace and VM workflow
+
+- Added bounded guest-physical write watchpoints to the canonical machine and
+  headless runner. The CLI can inspect/dump physical ranges, single-step after
+  an instruction threshold, stop on a watched write, and apply an explicitly
+  labeled debug-only u32 patch for controlled counterfactual experiments.
+- The first write to `0x00495e08` occurs at instruction 19,059,872. The prior
+  state is a `REP STOSD` zero-fill from `0x0046d000` through `0x00496060`;
+  all 16 watched bytes remain zero, and no later write occurs before the null
+  call at instruction 20,376,806.
+- A black-box QEMU/TCG boot of the same locally supplied media reaches the same
+  call site with a low-memory callback pointer installed. Applying that value
+  to Aero as an experiment advances 263 instructions and then diverges at a
+  different low address. This disproves a one-value workaround and points back
+  to missing callback registration or broader handoff semantics.
+- The reference comparison exposed `CR0.ET=1` versus Aero's incorrect zero.
+  Added the fixed ET bit to canonical reset state, MOV CR0/LMSW writes, and the
+  legacy helper, with a focused regression test. The real ISO now reports
+  `CR0=0x11` at the failure boundary, but the callback remains null.
+- Local memory comparison showed the low transition table itself is intact:
+  both executions contain the callback-table pointer at physical `0x2530c`
+  and the same transition stub at `0x23dc0`. The missing behavior is therefore
+  the registration/propagation step into protected global `0x495e08`, not
+  generation of the low thunk.
+- Added native `--cpus` plumbing with an explicit warning for counts above one.
+  One vCPU remains the recommended Windows bring-up configuration.
+- Added `scripts/aero-vm.sh` and a shell integration test. It creates sparse
+  VM disks outside the repository, tracks RAM/vCPUs/ISO/acceleration settings,
+  launches GUI or headless flows, prints dry-run commands, and moves removed
+  VMs to recoverable trash.
+- Added `docs/MACOS_ACCELERATED_VM_GUIDE.md` covering the CPU/Metal/AeroGPU
+  layers, lifecycle, driver requirements, evidence required before claiming
+  guest acceleration, and current limitations.
+
+Next: trace reads of the low callback table and the code path that should copy
+`0x2530c` into `0x495e08`, starting from handoff data passed from the 16-bit
+boot environment into the protected loader. Do not convert the observed
+pointer into a product workaround.

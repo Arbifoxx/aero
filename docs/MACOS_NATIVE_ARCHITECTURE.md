@@ -17,11 +17,20 @@ scripts/bootstrap-macos.sh
 scripts/build-macos.sh
 target/debug/aero-macos --list-gpu
 target/debug/aero-macos --host-triangle
-target/debug/aero-macos --install-iso /path/to/win7.iso --boot cdrom --memory 2048 --trace-pci --trace-scanout
-target/debug/aero-macos --disk /path/to/win7.img --install-iso /path/to/win7.iso --boot cd-first --memory 2048 --aerogpu-wgpu
+target/debug/aero-macos --install-iso /path/to/win7.iso --boot cdrom --memory 2048 --cpus 1 --trace-pci --trace-scanout
+target/debug/aero-macos --disk /path/to/win7.img --install-iso /path/to/win7.iso --boot cd-first --memory 2048 --cpus 1 --aerogpu-wgpu
+scripts/aero-vm.sh create win7-lab --ram 2048 --cpus 1 --disk-size 40G --iso /path/to/win7.iso
+scripts/aero-vm.sh start win7-lab --install --trace
 ```
 
 `--aerogpu-wgpu` installs the existing feature-gated in-process executor. The frontend's own Metal surface remains independent from that executor; `Machine::display_present()` bridges backend scanout readback into the presentation texture.
+
+`--cpus` publishes the selected topology and enables the canonical machine's
+cooperative AP loop. Counts above one are still SMP bring-up only; use one vCPU
+for Windows boot work. `scripts/aero-vm.sh` stores sparse disks and small
+configuration files outside the repository. See
+`docs/MACOS_ACCELERATED_VM_GUIDE.md` for the operator workflow and the
+distinction between host Metal presentation and validated guest acceleration.
 
 `Machine::new` performs POST immediately, so the frontend resets the machine
 after attaching HDD/CD media and applying the boot policy. On a guest reset,

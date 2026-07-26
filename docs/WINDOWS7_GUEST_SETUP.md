@@ -2,6 +2,10 @@
 
 The in-tree driver targets Windows 7 SP1 x86 and x64, WDDM 1.1. Its canonical hardware identity is `PCI\VEN_A3A0&DEV_0001`; package metadata, INF selection, UMD/KMD relationships and debug tooling are documented in `drivers/aerogpu/README.md` and `drivers/aerogpu/packaging/win7/README.md`.
 
+For native VM creation, resource settings, and the distinction between host
+Metal presentation and guest AeroGPU acceleration, first read
+`docs/MACOS_ACCELERATED_VM_GUIDE.md`.
+
 Builds are not performed on macOS. Use a Windows 10/11 x64 build environment
 with WDK 10 and MSBuild:
 

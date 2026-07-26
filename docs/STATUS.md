@@ -33,9 +33,30 @@ An optimized ISO-only run executes 20,376,806 instructions and reaches
 32-bit protected code. At `0020:0040695f`, `mov eax,[0x00495e08]` loads a null
 bootloader global. The following `call [eax]` reads physical address zero,
 interprets the IVT bytes for `F000:EF00` as a flat target (`0xf000ef00`), and
-then faults on unmapped `0xff` bytes. The earliest next task is to trace why
-`0x00495e08` was not initialized—CPU semantics versus firmware/loader handoff—
-not to add another opcode at the final address.
+then faults on unmapped `0xff` bytes.
+
+A physical-memory write watch narrowed initialization further. Instruction
+19,059,871 is a zero-fill `REP STOSD` covering `0x0046d000..0x00496060`;
+the watched global is deliberately initialized to zero at instruction
+19,059,872 and receives no later write before the call. In a local black-box
+reference boot of the same media, the global contains a low-memory callback
+table pointer at the call site. Aero and the reference have the same pointer
+and transition stub already present at physical `0x0002530c` and `0x00023dc0`;
+the missing step is propagation into the protected loader global. Supplying
+the observed table pointer to Aero as a debug-only memory patch advances just
+263 instructions before state diverges again, so hardcoding the pointer is
+neither correct nor a fix.
+
+The comparison also found Aero incorrectly allowed `CR0.ET` to read as zero.
+The reset state and CR0 write paths now keep this modern-CPU fixed bit set,
+matching the reference `CR0=0x11` at the boundary. This is an architectural
+correction with a regression test, but it does not initialize the callback or
+move the boot boundary.
+
+The earliest next task is therefore to locate the missing
+`0x0002530c`-to-`0x00495e08` callback-registration path and compare its
+inputs—firmware handoff data, CPU semantics, and loader control flow—with the
+reference behavior. The terminal invalid opcode is only a downstream symptom.
 
 The run now passes the earlier deterministic loader gaps for ENTER/LEAVE,
 PUSHFD/POPFD operand overrides, LES, indirect far JMP, RETFD stack width, and

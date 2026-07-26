@@ -20,11 +20,32 @@ target/release/aero-machine \
   --vga-png /tmp/aero-win7.png
 ```
 
-Failure reports include mode, CS/base, RIP/linear IP, flags, control registers,
-GPRs, instruction bytes, and stack bytes while paging is disabled. Once a
-failure is deterministic, `--max-insts N` can stop immediately before it; this
-is how the current null callback at `0020:0040695f` was separated from its later
-`0xf000ef00` symptom.
+Failure reports include mode, segment selectors/bases, RIP/linear IP, flags,
+control registers, descriptor-table bases/limits, GPRs, instruction bytes, and
+stack bytes while paging is disabled. Once a failure is deterministic,
+`--max-insts N` can stop immediately before it; this is how the current null
+callback at `0020:0040695f` was separated from its later `0xf000ef00` symptom.
+
+For write provenance, use a bounded physical watchpoint. The runner can switch
+to single-instruction slices only near the suspected interval:
+
+```bash
+target/release/aero-machine \
+  --install-iso /path/to/win7.iso \
+  --boot cdrom \
+  --ram 1024 \
+  --max-insts 20376806 \
+  --watch-phys 0x495e08:4 \
+  --watch-after-insts 19000000 \
+  --watch-granularity-insts 1 \
+  --watch-stop \
+  --inspect-phys 0x495e08:16
+```
+
+`--dump-phys ADDRESS:LENGTH:PATH` writes a local byte dump capped at 256 MiB.
+Guest dumps can contain proprietary material and must not be committed.
+`--patch-phys-u32-at INSTRUCTIONS:ADDRESS:VALUE` is a counterfactual debugging
+tool only: it deliberately changes guest state and cannot establish a fix.
 
 The native `--trace-*` switches currently emit periodic summaries or direct
 users to shared-layer tracing. They are not a complete per-MMIO/per-command
