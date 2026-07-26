@@ -40,6 +40,10 @@ struct Args {
     #[arg(long, default_value_t = 512)]
     memory: u64,
 
+    /// Number of guest vCPUs. Keep this at 1 for Windows boots; SMP is still experimental.
+    #[arg(long, default_value_t = 1)]
+    cpus: u8,
+
     /// Only render the host Metal triangle; do not start the emulated machine.
     #[arg(long)]
     host_triangle: bool,
@@ -342,15 +346,25 @@ fn run(args: Args) -> Result<()> {
 
 fn create_machine(args: &Args, trace: TraceOptions) -> Result<Machine> {
     let boot_mode = resolve_boot_mode(args.disk.is_some(), args.install_iso.is_some(), args.boot)?;
+    if args.cpus == 0 {
+        bail!("--cpus must be at least 1");
+    }
+    if args.cpus > 1 {
+        tracing::warn!(
+            cpus = args.cpus,
+            "SMP is experimental; use --cpus 1 for Windows 7 boot compatibility"
+        );
+    }
     let ram_bytes = args
         .memory
         .checked_mul(1024 * 1024)
         .context("memory size overflow")?;
-    let cfg = if args.no_aerogpu {
+    let mut cfg = if args.no_aerogpu {
         MachineConfig::win7_storage_defaults(ram_bytes)
     } else {
         MachineConfig::win7_graphics(ram_bytes)
     };
+    cfg.cpu_count = args.cpus;
     let mut machine = Machine::new(cfg).map_err(|err| anyhow!(err))?;
     if let Some(path) = &args.disk {
         machine
@@ -388,6 +402,7 @@ fn create_machine(args: &Args, trace: TraceOptions) -> Result<Machine> {
     tracing::info!(
         configured_boot = ?machine.boot_device(),
         active_boot = ?machine.active_boot_device(),
+        cpus = machine.cpu_count(),
         disk = ?args.disk,
         install_iso = ?args.install_iso,
         "machine boot media configured"
@@ -460,7 +475,7 @@ fn open_disk(path: &Path, read_only: bool) -> Result<Box<dyn VirtualDisk>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_boot_mode, BootMode};
+    use super::{create_machine, resolve_boot_mode, Args, BootMode, TraceOptions};
 
     #[test]
     fn boot_mode_defaults_follow_attached_media() {
@@ -473,6 +488,36 @@ mod tests {
             resolve_boot_mode(true, true, None).unwrap(),
             BootMode::CdFirst
         );
+    }
+
+    #[test]
+    fn zero_vcpus_is_rejected_before_machine_creation() {
+        let args = Args {
+            disk: None,
+            install_iso: Some("/does/not/matter.iso".into()),
+            boot: Some(BootMode::Cdrom),
+            memory: 512,
+            cpus: 0,
+            host_triangle: false,
+            list_gpu: false,
+            allow_fallback_adapter: false,
+            aerogpu_wgpu: false,
+            no_aerogpu: false,
+            max_ms: Some(1),
+            log_level: "info".into(),
+            trace_pci: false,
+            trace_mmio: false,
+            trace_gpu_commands: false,
+            trace_fences: false,
+            trace_vblank: false,
+            trace_scanout: false,
+            trace_shared_surfaces: false,
+        };
+        let err = match create_machine(&args, TraceOptions::default()) {
+            Ok(_) => panic!("zero vCPUs unexpectedly accepted"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("--cpus must be at least 1"));
     }
 
     #[test]
