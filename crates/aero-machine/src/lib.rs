@@ -1169,11 +1169,29 @@ pub struct PhysicalWriteEvent {
     pub current: Vec<u8>,
 }
 
+/// A read that overlapped a guest-physical debug watchpoint.
+///
+/// This is a host debugging aid only. `bytes` contains only the intersection between the read and
+/// the watched range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalReadEvent {
+    pub paddr: u64,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug)]
 struct PhysicalWriteWatch {
     start: u64,
     end: u64,
     events: Vec<PhysicalWriteEvent>,
+    dropped_events: u64,
+}
+
+#[derive(Debug)]
+struct PhysicalReadWatch {
+    start: u64,
+    end: u64,
+    events: Vec<PhysicalReadEvent>,
     dropped_events: u64,
 }
 
@@ -1183,6 +1201,7 @@ struct SystemMemory {
     dirty: DirtyTracker,
     mapped_roms: HashMap<u64, usize>,
     mapped_mmio: Vec<(u64, u64)>,
+    physical_read_watch: Option<PhysicalReadWatch>,
     physical_write_watch: Option<PhysicalWriteWatch>,
 }
 
@@ -1228,6 +1247,7 @@ impl SystemMemory {
             dirty,
             mapped_roms: HashMap::new(),
             mapped_mmio: Vec::new(),
+            physical_read_watch: None,
             physical_write_watch: None,
         })
     }
@@ -1251,6 +1271,7 @@ impl SystemMemory {
             dirty,
             mapped_roms: HashMap::new(),
             mapped_mmio: Vec::new(),
+            physical_read_watch: None,
             physical_write_watch: None,
         })
     }
@@ -1351,7 +1372,33 @@ impl FirmwareMemory for SystemMemory {
 
 impl memory::MemoryBus for SystemMemory {
     fn read_physical(&mut self, paddr: u64, buf: &mut [u8]) {
+        const MAX_WATCH_EVENTS: usize = 4096;
         self.bus.read_physical(paddr, buf);
+        let event = self.physical_read_watch.as_ref().and_then(|watch| {
+            let read_end = paddr.checked_add(buf.len() as u64)?;
+            let start = paddr.max(watch.start);
+            let end = read_end.min(watch.end);
+            if start >= end {
+                return None;
+            }
+            let buf_start = usize::try_from(start - paddr).ok()?;
+            let len = usize::try_from(end - start).ok()?;
+            Some(PhysicalReadEvent {
+                paddr: start,
+                bytes: buf[buf_start..buf_start + len].to_vec(),
+            })
+        });
+        if let Some(event) = event {
+            let watch = self
+                .physical_read_watch
+                .as_mut()
+                .expect("watch existed while computing overlap");
+            if watch.events.len() < MAX_WATCH_EVENTS {
+                watch.events.push(event);
+            } else {
+                watch.dropped_events = watch.dropped_events.saturating_add(1);
+            }
+        }
     }
 
     fn write_physical(&mut self, paddr: u64, buf: &[u8]) {
@@ -6075,6 +6122,51 @@ impl Machine {
         let mut out = vec![0u8; len];
         self.mem.read_physical(paddr, &mut out);
         out
+    }
+
+    /// Watch reads that overlap a guest-physical address range.
+    ///
+    /// This replaces any existing read watchpoint and persists across machine resets. It is
+    /// intended for bounded boot debugging; at most 4096 events are retained between drain calls.
+    ///
+    /// Returns `false` when `len` is zero or the range overflows the physical address space.
+    pub fn set_physical_read_watchpoint(&mut self, paddr: u64, len: usize) -> bool {
+        let Some(end) = paddr.checked_add(len as u64) else {
+            return false;
+        };
+        if len == 0 {
+            return false;
+        }
+        self.mem.physical_read_watch = Some(PhysicalReadWatch {
+            start: paddr,
+            end,
+            events: Vec::new(),
+            dropped_events: 0,
+        });
+        true
+    }
+
+    /// Drain events captured by the guest-physical read watchpoint.
+    pub fn take_physical_read_events(&mut self) -> Vec<PhysicalReadEvent> {
+        self.mem
+            .physical_read_watch
+            .as_mut()
+            .map(|watch| std::mem::take(&mut watch.events))
+            .unwrap_or_default()
+    }
+
+    /// Return and clear the number of read-watch events dropped since the previous call.
+    pub fn take_dropped_physical_read_event_count(&mut self) -> u64 {
+        self.mem
+            .physical_read_watch
+            .as_mut()
+            .map(|watch| std::mem::take(&mut watch.dropped_events))
+            .unwrap_or(0)
+    }
+
+    /// Disable the guest-physical read watchpoint and discard pending events.
+    pub fn clear_physical_read_watchpoint(&mut self) {
+        self.mem.physical_read_watch = None;
     }
 
     /// Watch writes that overlap a guest-physical address range.
@@ -16194,6 +16286,33 @@ mod tests {
                 paddr: 0x1002,
                 previous: vec![0, 0, 0],
                 current: vec![3, 4, 5],
+            }]
+        );
+        assert_eq!(watch.dropped_events, 0);
+    }
+
+    #[test]
+    fn physical_read_watch_records_only_the_overlap() {
+        let chipset = ChipsetState::new(true);
+        let mut mem =
+            SystemMemory::new(0x4000, chipset.a20()).expect("construct SystemMemory with RAM");
+        memory::MemoryBus::write_physical(&mut mem, 0x1000, &[1, 2, 3, 4, 5, 6]);
+        mem.physical_read_watch = Some(PhysicalReadWatch {
+            start: 0x1002,
+            end: 0x1005,
+            events: Vec::new(),
+            dropped_events: 0,
+        });
+
+        let mut bytes = [0; 6];
+        memory::MemoryBus::read_physical(&mut mem, 0x1000, &mut bytes);
+
+        let watch = mem.physical_read_watch.as_ref().unwrap();
+        assert_eq!(
+            watch.events,
+            vec![PhysicalReadEvent {
+                paddr: 0x1002,
+                bytes: vec![3, 4, 5],
             }]
         );
         assert_eq!(watch.dropped_events, 0);

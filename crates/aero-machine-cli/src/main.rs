@@ -137,18 +137,25 @@ mod native {
         #[arg(long, value_name = "ADDRESS:LENGTH")]
         watch_phys: Option<PhysicalRange>,
 
+        /// Record reads overlapping guest physical memory (`ADDRESS:LENGTH`).
+        ///
+        /// The watched range is capped at 4 KiB. Events report the instruction-count interval in
+        /// which the read occurred and the bytes returned.
+        #[arg(long, value_name = "ADDRESS:LENGTH")]
+        watch_read_phys: Option<PhysicalRange>,
+
         /// Begin using `--watch-granularity-insts` after this many instructions.
-        #[arg(long, default_value_t = 0, requires = "watch_phys")]
+        #[arg(long, default_value_t = 0)]
         watch_after_insts: u64,
 
         /// Runner slice size after `--watch-after-insts`.
         ///
         /// Use 1 to identify the instruction immediately responsible for a watched write.
-        #[arg(long, default_value_t = SLICE_INST_BUDGET, requires = "watch_phys")]
+        #[arg(long, default_value_t = SLICE_INST_BUDGET)]
         watch_granularity_insts: u64,
 
-        /// Stop immediately after the first slice that records a watched write.
-        #[arg(long, requires = "watch_phys")]
+        /// Stop immediately after the first slice that records a watched read or write.
+        #[arg(long)]
         watch_stop: bool,
 
         /// Debug-only guest mutation (`INSTRUCTIONS:ADDRESS:VALUE`, decimal or `0x` hex).
@@ -326,23 +333,36 @@ mod native {
         let mut cfg = MachineConfig::win7_storage_defaults(ram_bytes);
         cfg.cpu_count = args.cpus;
         let mut machine = Machine::new(cfg).map_err(|e| anyhow!("{e}"))?;
-        if let Some(watch) = &args.watch_phys {
+        for (kind, watch) in [
+            ("read", args.watch_read_phys.as_ref()),
+            ("write", args.watch_phys.as_ref()),
+        ] {
+            let Some(watch) = watch else {
+                continue;
+            };
             const MAX_WATCH_BYTES: usize = 4096;
             if watch.length > MAX_WATCH_BYTES {
                 bail!(
-                    "refusing to watch {} bytes at {:#x}; maximum is {} bytes",
+                    "refusing to watch {kind}s over {} bytes at {:#x}; maximum is {} bytes",
                     watch.length,
                     watch.address,
                     MAX_WATCH_BYTES
                 );
             }
-            if !machine.set_physical_write_watchpoint(watch.address, watch.length) {
+            let accepted = match kind {
+                "read" => machine.set_physical_read_watchpoint(watch.address, watch.length),
+                "write" => machine.set_physical_write_watchpoint(watch.address, watch.length),
+                _ => unreachable!(),
+            };
+            if !accepted {
                 bail!(
-                    "invalid physical write watch range at {:#x} with length {}",
+                    "invalid physical {kind} watch range at {:#x} with length {}",
                     watch.address,
                     watch.length
                 );
             }
+        }
+        if args.watch_phys.is_some() || args.watch_read_phys.is_some() {
             if args.watch_granularity_insts == 0 {
                 bail!("--watch-granularity-insts must be greater than zero");
             }
@@ -545,6 +565,13 @@ mod native {
             &mut watch_event_count,
             &mut dropped_watch_event_count,
         );
+        report_physical_reads(
+            &mut machine,
+            0,
+            0,
+            &mut watch_event_count,
+            &mut dropped_watch_event_count,
+        );
 
         loop {
             if let Some(patch) = &args.patch_phys_u32_at {
@@ -594,10 +621,15 @@ mod native {
                 &mut watch_event_count,
                 &mut dropped_watch_event_count,
             );
+            report_physical_reads(
+                &mut machine,
+                interval_start,
+                total_executed,
+                &mut watch_event_count,
+                &mut dropped_watch_event_count,
+            );
             if args.watch_stop && watch_event_count != previous_watch_event_count {
-                eprintln!(
-                    "physical write watch requested stop after {total_executed} instructions"
-                );
+                eprintln!("physical watch requested stop after {total_executed} instructions");
                 break;
             }
             stream_serial(&mut machine, &mut serial_sink)?;
@@ -626,9 +658,9 @@ mod native {
         );
         inspect_physical_ranges(&mut machine, &args.inspect_phys)?;
         dump_physical_ranges(&mut machine, &args.dump_phys)?;
-        if args.watch_phys.is_some() {
+        if args.watch_phys.is_some() || args.watch_read_phys.is_some() {
             eprintln!(
-                "physical write watch summary: events={} dropped={}",
+                "physical watch summary: events={} dropped={}",
                 watch_event_count, dropped_watch_event_count
             );
         }
@@ -874,6 +906,30 @@ mod native {
         }
     }
 
+    fn report_physical_reads(
+        machine: &mut Machine,
+        interval_start: u64,
+        interval_end: u64,
+        event_count: &mut u64,
+        dropped_event_count: &mut u64,
+    ) {
+        for event in machine.take_physical_read_events() {
+            *event_count = event_count.saturating_add(1);
+            eprintln!(
+                "physical read event: instructions=({interval_start},{interval_end}] paddr={:#x} bytes=[{}]",
+                event.paddr,
+                format_bytes(&event.bytes)
+            );
+        }
+        let dropped = machine.take_dropped_physical_read_event_count();
+        if dropped != 0 {
+            *dropped_event_count = dropped_event_count.saturating_add(dropped);
+            eprintln!(
+                "warning: dropped {dropped} physical read events in instruction interval ({interval_start},{interval_end}]"
+            );
+        }
+    }
+
     fn format_bytes(bytes: &[u8]) -> String {
         bytes
             .iter()
@@ -894,7 +950,7 @@ mod native {
                 budget = budget.min(patch.instructions - total_executed);
             }
         }
-        if args.watch_phys.is_none() {
+        if args.watch_phys.is_none() && args.watch_read_phys.is_none() {
             return budget;
         }
         if total_executed < args.watch_after_insts {
