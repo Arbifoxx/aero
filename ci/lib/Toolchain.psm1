@@ -518,23 +518,6 @@ function Get-WingetPackageVersionsForKit {
   )
 }
 
-function Get-ChocoExe {
-  [CmdletBinding()]
-  param()
-
-  $cmd = Get-Command choco.exe -ErrorAction SilentlyContinue
-  if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source) -and (Test-Path -LiteralPath $cmd.Source)) {
-    return (Resolve-ExistingPath -LiteralPath $cmd.Source)
-  }
-
-  $cmd = Get-Command choco -ErrorAction SilentlyContinue
-  if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace($cmd.Source) -and (Test-Path -LiteralPath $cmd.Source)) {
-    return (Resolve-ExistingPath -LiteralPath $cmd.Source)
-  }
-
-  return $null
-}
-
 function Test-IsAdministrator {
   [CmdletBinding()]
   param()
@@ -555,7 +538,8 @@ function Invoke-ExternalCommand {
     [string]$FilePath,
     [Parameter(Mandatory = $true)]
     [string[]]$Arguments,
-    [string]$FailureHint
+    [string]$FailureHint,
+    [int[]]$AcceptedExitCodes = @(0)
   )
 
   $prettyArgs = ($Arguments | ForEach-Object {
@@ -577,7 +561,7 @@ function Invoke-ExternalCommand {
       -RedirectStandardOutput $stdoutFile `
       -RedirectStandardError $stderrFile
 
-    if ($proc.ExitCode -ne 0) {
+    if ($AcceptedExitCodes -notcontains $proc.ExitCode) {
       $stdout = Get-Content -LiteralPath $stdoutFile -Raw -ErrorAction SilentlyContinue
       $stderr = Get-Content -LiteralPath $stderrFile -Raw -ErrorAction SilentlyContinue
 
@@ -601,6 +585,98 @@ function Invoke-ExternalCommand {
     Remove-Item -LiteralPath $stdoutFile -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
   }
+}
+
+function Get-MicrosoftKitBootstrapper {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Uri,
+    [Parameter(Mandatory = $true)]
+    [string]$FileName,
+    [Parameter(Mandatory = $true)]
+    [string]$DisplayName,
+    [string]$DownloadDirectory
+  )
+
+  $downloadUri = [Uri]$Uri
+  if ($downloadUri.Scheme -ne 'https' -or $downloadUri.Host -notin @('go.microsoft.com', 'download.microsoft.com')) {
+    throw "Refusing to download $DisplayName from a non-Microsoft HTTPS URL: $Uri"
+  }
+
+  if ([string]::IsNullOrWhiteSpace($DownloadDirectory)) {
+    $DownloadDirectory = Join-Path ([System.IO.Path]::GetTempPath()) 'aero-wdk-download-cache'
+  } elseif (-not [System.IO.Path]::IsPathRooted($DownloadDirectory)) {
+    $DownloadDirectory = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $DownloadDirectory))
+  }
+
+  if (-not (Test-Path -LiteralPath $DownloadDirectory)) {
+    New-Item -ItemType Directory -Force -Path $DownloadDirectory | Out-Null
+  }
+
+  $installerPath = Join-Path $DownloadDirectory $FileName
+
+  if (Test-Path -LiteralPath $installerPath) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
+    if ($signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid -and
+        $null -ne $signature.SignerCertificate -and
+        $signature.SignerCertificate.Subject -match 'Microsoft') {
+      Write-ToolchainLog -Message "Using cached Microsoft-signed $DisplayName bootstrapper: $installerPath"
+      return (Resolve-ExistingPath -LiteralPath $installerPath)
+    }
+
+    Write-ToolchainLog -Level WARN -Message "Discarding cached $DisplayName bootstrapper because its Microsoft Authenticode signature is not valid (status=$($signature.Status)): $installerPath"
+    Remove-Item -LiteralPath $installerPath -Force
+  }
+
+  $partialPath = "$installerPath.download"
+  Remove-Item -LiteralPath $partialPath -Force -ErrorAction SilentlyContinue
+
+  try {
+    Write-ToolchainLog -Message "Downloading the official $DisplayName bootstrapper from Microsoft: $Uri"
+    Invoke-WebRequest -Uri $Uri -OutFile $partialPath -UseBasicParsing
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $partialPath
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+        $null -eq $signature.SignerCertificate -or
+        $signature.SignerCertificate.Subject -notmatch 'Microsoft') {
+      throw "Downloaded $DisplayName bootstrapper does not have a valid Microsoft Authenticode signature (status=$($signature.Status))."
+    }
+
+    Move-Item -LiteralPath $partialPath -Destination $installerPath -Force
+  } finally {
+    Remove-Item -LiteralPath $partialPath -Force -ErrorAction SilentlyContinue
+  }
+
+  return (Resolve-ExistingPath -LiteralPath $installerPath)
+}
+
+function Install-MicrosoftKitBootstrapper {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Uri,
+    [Parameter(Mandatory = $true)]
+    [string]$FileName,
+    [Parameter(Mandatory = $true)]
+    [string]$DisplayName,
+    [string]$DownloadDirectory
+  )
+
+  $installer = Get-MicrosoftKitBootstrapper `
+    -Uri $Uri `
+    -FileName $FileName `
+    -DisplayName $DisplayName `
+    -DownloadDirectory $DownloadDirectory
+
+  Invoke-ExternalCommand `
+    -FilePath $installer `
+    -Arguments @('/features', '+', '/quiet', '/norestart') `
+    -AcceptedExitCodes @(0, 1641, 3010) `
+    -FailureHint @"
+The official Microsoft bootstrapper failed. Its setup logs are normally written under:
+  $env:TEMP\Windows Kits
+"@
 }
 
 function Install-WingetPackage {
@@ -693,34 +769,17 @@ You can inspect available versions with:
   throw "winget install failed for $WingetId with all supported flag combinations."
 }
 
-function Install-WdkViaChocolatey {
-  [CmdletBinding()]
-  param()
-
-  $choco = Get-ChocoExe
-  if ($null -eq $choco) {
-    throw 'choco.exe was not found.'
-  }
-
-  $args = @(
-    'install',
-    'windows-driver-kit',
-    '-y',
-    '--no-progress'
-  )
-
-  Invoke-ExternalCommand -FilePath $choco -Arguments $args -FailureHint @"
-If this is a CI runner and Chocolatey package installation is flaky, prefer using winget by installing the Windows SDK/WDK manually.
-"@
-}
-
 function Ensure-WindowsKitToolchain {
   [CmdletBinding()]
   param(
     [Parameter()]
     [string]$PreferredWdkWingetId = 'Microsoft.WindowsWDK',
     [Parameter()]
-    [string]$PreferredWdkKitVersion = '10.0.22621.0'
+    [string]$PreferredWdkKitVersion = '10.0.22621.0',
+    [Parameter()]
+    [string]$PreferredSdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2311806',
+    [Parameter()]
+    [string]$PreferredWdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2330411'
   )
 
   $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
@@ -754,23 +813,11 @@ Remediation:
 "@
   }
 
-  Write-ToolchainLog -Level WARN -Message "Required Windows Kits tooling not found ($($missing -join ', ')). Attempting to install via winget (preferred) with Chocolatey fallback..."
+  Write-ToolchainLog -Level WARN -Message "Required Windows Kits tooling not found ($($missing -join ', ')). Attempting to install the paired Windows SDK/WDK..."
 
   $winget = Get-WingetExe
   if ($null -eq $winget) {
-    Write-ToolchainLog -Level WARN -Message 'winget.exe was not found. Falling back to Chocolatey (windows-driver-kit) if available...'
-    try {
-      Install-WdkViaChocolatey
-    } catch {
-      Write-ToolchainLog -Level WARN -Message "Chocolatey WDK install attempt failed: $($_.Exception.Message)"
-    }
-
-    $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
-    $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
-    if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
-      $toolchain.WindowsKits.DriverBuild = $driverBuildSupport
-      return $toolchain
-    }
+    Write-ToolchainLog -Level WARN -Message 'winget.exe was not found. The official Microsoft standalone SDK/WDK bootstrappers will be used.'
   }
 
   # winget versions for SDK/WDK installers do not always match the installed Kit version exactly.
@@ -793,81 +840,89 @@ Remediation:
   # Last resort: install whatever winget considers "latest" if we can't match the pinned version string.
   $versionCandidates += $null
 
-  $installAttempted = $false
   $wdkIdCandidates = @(
     $PreferredWdkWingetId,
     'Microsoft.WindowsDriverKit'
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
   $sdkIdCandidates = @('Microsoft.WindowsSDK')
 
-  foreach ($versionCandidate in $versionCandidates) {
-    $versionLabel = if ([string]::IsNullOrWhiteSpace($versionCandidate)) { 'latest' } else { $versionCandidate }
+  if ($null -ne $winget) {
+    foreach ($versionCandidate in $versionCandidates) {
+      $versionLabel = if ([string]::IsNullOrWhiteSpace($versionCandidate)) { 'latest' } else { $versionCandidate }
 
-    if ($needsSdk) {
-      foreach ($sdkId in $sdkIdCandidates) {
-        $installAttempted = $true
-        try {
-          Write-ToolchainLog -Message "Installing Windows SDK via winget (id=$sdkId, version=$versionLabel)..."
-          Install-WingetPackage -WingetId $sdkId -WingetVersion $versionCandidate -DisplayName 'Windows SDK' -DownloadDirectory $env:WDK_DOWNLOAD_CACHE
-          break
-        } catch {
-          Write-ToolchainLog -Level WARN -Message "Windows SDK install attempt failed (id=$sdkId, version=$versionLabel): $($_.Exception.Message)"
+      if ($needsSdk) {
+        foreach ($sdkId in $sdkIdCandidates) {
+          try {
+            Write-ToolchainLog -Message "Installing Windows SDK via winget (id=$sdkId, version=$versionLabel)..."
+            Install-WingetPackage -WingetId $sdkId -WingetVersion $versionCandidate -DisplayName 'Windows SDK' -DownloadDirectory $env:WDK_DOWNLOAD_CACHE
+            break
+          } catch {
+            Write-ToolchainLog -Level WARN -Message "Windows SDK install attempt failed (id=$sdkId, version=$versionLabel): $($_.Exception.Message)"
+          }
         }
       }
-    }
 
-    if ($needsWdk) {
-      foreach ($wdkId in $wdkIdCandidates) {
-        $installAttempted = $true
-        try {
-          Write-ToolchainLog -Message "Installing Windows Driver Kit via winget (id=$wdkId, version=$versionLabel)..."
-          Install-WingetPackage -WingetId $wdkId -WingetVersion $versionCandidate -DisplayName 'Windows Driver Kit (WDK)' -DownloadDirectory $env:WDK_DOWNLOAD_CACHE
-          break
-        } catch {
-          Write-ToolchainLog -Level WARN -Message "WDK install attempt failed (id=$wdkId, version=$versionLabel): $($_.Exception.Message)"
+      if ($needsWdk) {
+        foreach ($wdkId in $wdkIdCandidates) {
+          try {
+            Write-ToolchainLog -Message "Installing Windows Driver Kit via winget (id=$wdkId, version=$versionLabel)..."
+            Install-WingetPackage -WingetId $wdkId -WingetVersion $versionCandidate -DisplayName 'Windows Driver Kit (WDK)' -DownloadDirectory $env:WDK_DOWNLOAD_CACHE
+            break
+          } catch {
+            Write-ToolchainLog -Level WARN -Message "WDK install attempt failed (id=$wdkId, version=$versionLabel): $($_.Exception.Message)"
+          }
         }
       }
-    }
 
-    $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
-    $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
-    if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
-      $toolchain.WindowsKits.DriverBuild = $driverBuildSupport
-      return $toolchain
-    }
-
-    $needsDriverBuildSupport = ($null -eq $driverBuildSupport)
-    $needsWdk = (
-      $null -eq (Resolve-WindowsKitTool -ToolName 'Inf2Cat.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference -RequireWin7Inf2Cat) -or
-      $needsDriverBuildSupport
-    )
-    $needsSdk = (
-      $null -eq (Resolve-WindowsKitTool -ToolName 'signtool.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference) -or
-      $needsDriverBuildSupport
-    )
-    if (-not $needsWdk -and -not $needsSdk) {
-      break
-    }
-  }
-
-  if (-not $installAttempted) {
-    throw 'No toolchain installation attempt was made; version candidates list was empty.'
-  }
-
-  $choco = Get-ChocoExe
-  if ($null -ne $choco) {
-    Write-ToolchainLog -Level WARN -Message 'Toolchain is still missing after winget attempts; trying Chocolatey (windows-driver-kit) as a fallback...'
-    try {
-      Install-WdkViaChocolatey
       $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
       $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
       if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
         $toolchain.WindowsKits.DriverBuild = $driverBuildSupport
         return $toolchain
       }
-    } catch {
-      Write-ToolchainLog -Level WARN -Message "Chocolatey WDK install attempt failed: $($_.Exception.Message)"
+
+      $needsDriverBuildSupport = ($null -eq $driverBuildSupport)
+      $needsWdk = (
+        $null -eq (Resolve-WindowsKitTool -ToolName 'Inf2Cat.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference -RequireWin7Inf2Cat) -or
+        $needsDriverBuildSupport
+      )
+      $needsSdk = (
+        $null -eq (Resolve-WindowsKitTool -ToolName 'signtool.exe' -Architectures @('x64', 'x86') -KitVersions $kitFamilyPreference) -or
+        $needsDriverBuildSupport
+      )
+      if (-not $needsWdk -and -not $needsSdk) {
+        break
+      }
     }
+  }
+
+  try {
+    if ($needsSdk) {
+      Write-ToolchainLog -Message "Installing the Windows SDK for kit $PreferredWdkKitVersion via Microsoft's official standalone bootstrapper..."
+      Install-MicrosoftKitBootstrapper `
+        -Uri $PreferredSdkBootstrapUri `
+        -FileName "winsdksetup-$PreferredWdkKitVersion.exe" `
+        -DisplayName 'Windows SDK' `
+        -DownloadDirectory $env:WDK_DOWNLOAD_CACHE
+    }
+
+    if ($needsWdk) {
+      Write-ToolchainLog -Message "Installing the Windows Driver Kit for kit $PreferredWdkKitVersion via Microsoft's official standalone bootstrapper..."
+      Install-MicrosoftKitBootstrapper `
+        -Uri $PreferredWdkBootstrapUri `
+        -FileName "wdksetup-$PreferredWdkKitVersion.exe" `
+        -DisplayName 'Windows Driver Kit (WDK)' `
+        -DownloadDirectory $env:WDK_DOWNLOAD_CACHE
+    }
+  } catch {
+    Write-ToolchainLog -Level WARN -Message "Official Microsoft SDK/WDK bootstrapper install attempt failed: $($_.Exception.Message)"
+  }
+
+  $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
+  $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
+  if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
+    $toolchain.WindowsKits.DriverBuild = $driverBuildSupport
+    return $toolchain
   }
 
   throw @"
@@ -879,9 +934,11 @@ Expected tools:
   - WDK kernel/DDI headers and Visual Studio driver build integration for $PreferredWdkKitVersion
 
 Remediation:
-  1. Install the Windows SDK and WDK manually and ensure they install under:
+  1. Inspect the Microsoft installer logs under:
+       $env:TEMP\Windows Kits
+  2. Install the Windows SDK and WDK manually and ensure they install under:
        ${env:ProgramFiles(x86)}\Windows Kits\10
-  2. Re-run: pwsh -File ci/install-wdk.ps1
+  3. Re-run: pwsh -File ci/install-wdk.ps1
 
 If you have multiple Windows Kits installed, this script selects the newest versioned bin directory for each tool (Inf2Cat.exe, signtool.exe, stampinf.exe).
 "@
