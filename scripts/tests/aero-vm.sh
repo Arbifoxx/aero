@@ -10,6 +10,8 @@ export AERO_VM_HOME="$TEST_ROOT/vms"
 export AERO_MACOS_BIN=/usr/bin/true
 export AERO_MACHINE_BIN=/usr/bin/true
 export AERO_QEMU_BIN=/usr/bin/true
+export AERO_QEMU_BRIDGE="$TEST_ROOT/libaero_qemu_bridge.dylib"
+touch "$AERO_QEMU_BRIDGE"
 
 ISO="$TEST_ROOT/install.iso"
 touch "$ISO"
@@ -62,6 +64,8 @@ QEMU_COMMAND="$("$REPO_ROOT/scripts/aero-vm.sh" start qemu-vm --install --dry-ru
 [[ "$QEMU_COMMAND" == *"-smp 2"* ]]
 [[ "$QEMU_COMMAND" == *"-m 4096"* ]]
 [[ "$QEMU_COMMAND" == *"-device aerogpu"* ]]
+[[ "$QEMU_COMMAND" == *"renderer=native"* ]]
+[[ "$QEMU_COMMAND" == *"libaero_qemu_bridge.dylib"* ]]
 [[ "$QEMU_COMMAND" == *"-cdrom"* ]]
 
 if command -v qemu-img >/dev/null 2>&1; then

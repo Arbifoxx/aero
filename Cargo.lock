@@ -765,6 +765,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aero-qemu-bridge"
+version = "0.1.0"
+dependencies = [
+ "aero-devices",
+ "aero-devices-gpu",
+ "memory",
+]
+
+[[package]]
 name = "aero-shared"
 version = "0.1.0"
 dependencies = [

@@ -23,10 +23,12 @@ Usage:
   scripts/aero-vm.sh create NAME [--ram MiB] [--cpus N] [--disk-size SIZE]
                                   [--disk-format raw|qcow2] [--iso PATH]
                                   [--backend qemu|aero] [--acceleration on|off]
+                                  [--renderer native|noop]
   scripts/aero-vm.sh list
   scripts/aero-vm.sh show NAME
   scripts/aero-vm.sh set NAME [--ram MiB] [--cpus N] [--iso PATH|none]
                                [--backend qemu|aero] [--acceleration on|off]
+                               [--renderer native|noop]
   scripts/aero-vm.sh resize NAME --disk-size SIZE
   scripts/aero-vm.sh start NAME [--install] [--headless] [--max-ms MS]
                                 [--trace] [--dry-run] [-- EXTRA_ARGS...]
@@ -40,10 +42,11 @@ Environment:
   AERO_MACOS_BIN     Override the aero-macos executable
   AERO_MACHINE_BIN   Override the headless aero-machine executable
   AERO_QEMU_BIN      Override the AeroGPU-enabled qemu-system-x86_64
+  AERO_QEMU_BRIDGE   Override libaero_qemu_bridge.dylib
 
 Notes:
-  - QEMU is the recommended native backend. Its AeroGPU device currently enumerates,
-    but accelerated command execution is not connected yet.
+  - QEMU is the recommended native backend. The native renderer connects AeroGPU
+    command rings to Aero's experimental wgpu/Metal D3D9 executor.
   - The Aero backend remains available for device-model bring-up.
   - VM disks and Windows media remain outside the repository and are never bundled.
 EOF
@@ -80,6 +83,13 @@ validate_acceleration() {
   case "$1" in
     on | off) ;;
     *) die "acceleration must be 'on' or 'off'" ;;
+  esac
+}
+
+validate_renderer() {
+  case "$1" in
+    native | noop) ;;
+    *) die "renderer must be 'native' or 'noop'" ;;
   esac
 }
 
@@ -212,6 +222,23 @@ find_qemu_binary() {
   die "AeroGPU QEMU is not built; run scripts/build-qemu-aerogpu.sh build"
 }
 
+find_qemu_bridge() {
+  if [[ -n "${AERO_QEMU_BRIDGE:-}" ]]; then
+    [[ -f "$AERO_QEMU_BRIDGE" ]] ||
+      die "AERO_QEMU_BRIDGE does not exist: $AERO_QEMU_BRIDGE"
+    printf '%s\n' "$AERO_QEMU_BRIDGE"
+    return
+  fi
+  local tag
+  tag="$(sed -n '1p' "$REPO_ROOT/qemu/supported-version")"
+  local bundled="$REPO_ROOT/target/qemu-aerogpu/$tag/install/lib/libaero_qemu_bridge.dylib"
+  if [[ -f "$bundled" ]]; then
+    printf '%s\n' "$bundled"
+    return
+  fi
+  die "AeroGPU QEMU bridge is not built; run scripts/build-qemu-aerogpu.sh build"
+}
+
 find_binary() {
   local override="$1"
   local release_path="$2"
@@ -247,6 +274,7 @@ cmd_create() {
   local iso=""
   local backend=qemu
   local acceleration=on
+  local renderer=native
   while (($#)); do
     case "$1" in
       --ram)
@@ -284,6 +312,11 @@ cmd_create() {
         acceleration="$2"
         shift 2
         ;;
+      --renderer)
+        (($# >= 2)) || die "--renderer requires native or noop"
+        renderer="$2"
+        shift 2
+        ;;
       *) die "unknown create option: $1" ;;
     esac
   done
@@ -299,6 +332,7 @@ cmd_create() {
   [[ "$backend" == qemu || "$disk_format" == raw ]] ||
     die "the Aero backend currently requires a raw disk"
   validate_acceleration "$acceleration"
+  validate_renderer "$renderer"
   if [[ "$backend" == aero ]] && ((10#$cpus != 1)); then
     warn "the Aero backend's SMP support is incomplete; QEMU is recommended for multiple vCPUs"
   fi
@@ -320,6 +354,7 @@ cmd_create() {
   write_setting "$temp_dir" cpus "$cpus"
   write_setting "$temp_dir" backend "$backend"
   write_setting "$temp_dir" acceleration "$acceleration"
+  write_setting "$temp_dir" renderer "$renderer"
   write_setting "$temp_dir" install_iso "$iso"
   write_setting "$temp_dir" disk_size "$disk_size"
   write_setting "$temp_dir" disk_format "$disk_format"
@@ -330,6 +365,7 @@ cmd_create() {
   echo "created VM '$name'"
   echo "  directory: $final_dir"
   echo "  backend: $backend"
+  echo "  AeroGPU: $acceleration ($renderer renderer)"
   echo "  disk: $final_dir/$disk_name ($disk_size $disk_format)"
   echo "  RAM/vCPUs: ${ram} MiB / $cpus"
   if [[ -n "$iso" ]]; then
@@ -375,6 +411,7 @@ cmd_show() {
   echo "RAM MiB: $(read_setting "$dir" ram_mib)"
   echo "vCPUs: $(read_setting "$dir" cpus)"
   echo "acceleration: $(read_setting "$dir" acceleration)"
+  echo "AeroGPU renderer: $(read_setting_default "$dir" renderer native)"
   echo "configured disk size: $(read_setting "$dir" disk_size)"
   echo "disk format: $(read_setting_default "$dir" disk_format raw)"
   echo "disk: $disk"
@@ -429,6 +466,12 @@ cmd_set() {
         (($# >= 2)) || die "--acceleration requires on or off"
         validate_acceleration "$2"
         write_setting "$dir" acceleration "$2"
+        shift 2
+        ;;
+      --renderer)
+        (($# >= 2)) || die "--renderer requires native or noop"
+        validate_renderer "$2"
+        write_setting "$dir" renderer "$2"
         shift 2
         ;;
       *) die "unknown set option: $1" ;;
@@ -509,11 +552,12 @@ cmd_start() {
     esac
   done
 
-  local ram cpus backend acceleration iso disk disk_format
+  local ram cpus backend acceleration renderer iso disk disk_format
   ram="$(read_setting "$dir" ram_mib)"
   cpus="$(read_setting "$dir" cpus)"
   backend="$(read_setting_default "$dir" backend aero)"
   acceleration="$(read_setting "$dir" acceleration)"
+  renderer="$(read_setting_default "$dir" renderer native)"
   iso="$(read_setting "$dir" install_iso)"
   disk_format="$(read_setting_default "$dir" disk_format raw)"
   disk="$(vm_disk_path "$dir")"
@@ -522,6 +566,7 @@ cmd_start() {
   validate_cpus "$cpus"
   validate_backend "$backend"
   validate_acceleration "$acceleration"
+  validate_renderer "$renderer"
   if [[ "$backend" == aero ]] && ((10#$cpus != 1)); then
     warn "the Aero backend uses incomplete SMP; switch to QEMU or use one vCPU"
   fi
@@ -547,8 +592,14 @@ cmd_start() {
       -netdev user,id=net0
     )
     if [[ "$acceleration" == on ]]; then
-      command+=(-device aerogpu)
-      warn "the QEMU AeroGPU device currently enumerates but does not execute GPU commands yet"
+      local bridge
+      bridge="$(find_qemu_bridge)"
+      command+=(-device "aerogpu,bridge-path=$bridge,renderer=$renderer")
+      if [[ "$renderer" == native ]]; then
+        warn "AeroGPU native rendering is experimental; keep the standard VGA adapter enabled as a recovery display"
+      else
+        warn "AeroGPU noop mode validates the driver/ring/fence path without rendering"
+      fi
     fi
     if ((install)); then
       command+=(-cdrom "$iso" -boot order=d,menu=on)
@@ -659,7 +710,7 @@ prompt_default() {
 }
 
 menu_create() {
-  local name backend ram cpus disk_size disk_format iso
+  local name backend ram cpus disk_size disk_format iso renderer
   name="$(prompt_default "VM name" "")" || return
   backend="$(prompt_default "Backend (qemu/aero)" qemu)" || return
   ram="$(prompt_default "RAM in MiB" 4096)" || return
@@ -671,9 +722,11 @@ menu_create() {
     disk_format=raw
   fi
   iso="$(prompt_default "Windows ISO path (blank to attach later)" "")" || return
+  renderer="$(prompt_default "AeroGPU renderer (native/noop)" native)" || return
   local -a args=(
     "$name" --backend "$backend" --ram "$ram" --cpus "$cpus"
     --disk-size "$disk_size" --disk-format "$disk_format"
+    --renderer "$renderer"
   )
   [[ -z "$iso" ]] || args+=(--iso "$iso")
   cmd_create "${args[@]}"
@@ -703,6 +756,8 @@ menu_settings() {
   [[ -z "$value" ]] || cmd_set "$name" --cpus "$value" >/dev/null
   value="$(prompt_default "AeroGPU (on/off)" "$(read_setting "$dir" acceleration)")" || return
   [[ -z "$value" ]] || cmd_set "$name" --acceleration "$value" >/dev/null
+  value="$(prompt_default "AeroGPU renderer (native/noop)" "$(read_setting_default "$dir" renderer native)")" || return
+  [[ -z "$value" ]] || cmd_set "$name" --renderer "$value" >/dev/null
   value="$(prompt_default "ISO path, 'none' to detach" "$(read_setting "$dir" install_iso)")" || return
   [[ -z "$value" ]] || cmd_set "$name" --iso "$value" >/dev/null
   cmd_show "$name"

@@ -1,176 +1,153 @@
-# Accelerated Aero VMs on macOS
+# Windows 7 with AeroGPU on Apple Silicon
 
-This guide describes the native Apple Silicon frontend in `crates/aero-macos`.
-It is an experimental emulator, not a production replacement for QEMU,
-VirtualBox, VMware, or Parallels. As of 2026-07-25, Windows 7 passes the former
-32-bit bootloader callback crash and renders “Windows is loading files…”, but
-has not reached the graphical installer. The commands below create durable VM
-storage and launch the implemented path; they do not imply that a Windows
-installation can complete yet.
+The recommended native architecture is QEMU for the x86 PC and CPU, plus the
+AeroGPU PCI device and Rust-to-Metal bridge maintained in this repository.
+This avoids the browser/Wasm runtime while retaining Aero's Windows graphics
+protocol and renderer.
 
-## The important mental model
+For implementation details and the latest validation boundary, see
+`qemu/README.md`.
 
-An Aero VM has three distinct performance layers:
+## What acceleration means
 
-1. **Guest CPU:** x86/x86-64 instructions are emulated on Apple Silicon. This
-   is not Apple Hypervisor.framework acceleration. Use one vCPU for boot work;
-   Aero's multi-vCPU scheduler is still experimental.
-2. **Boot display:** BIOS VGA/VBE output is copied to a native Metal window.
-   Seeing this surface does not mean a Windows graphics driver is active.
-3. **Accelerated guest graphics:** the Windows AeroGPU WDDM driver submits
-   commands through the emulated `A3A0:0001` PCI device. With
-   `--aerogpu-wgpu`, the native backend executes those commands through wgpu
-   on Metal. This final path is implemented and host-tested, but has not run
-   inside a booted Windows 7 guest.
+There are two independent performance paths:
 
-The first reliable accelerated milestone will be the in-tree
-`d3d9ex_triangle` test. Aero Glass and general application compatibility come
-later.
+1. QEMU TCG translates the Windows 7 guest's x86/x86-64 CPU instructions to
+   ARM64. It supports multiple vCPUs but is software CPU emulation, not
+   Hypervisor.framework acceleration.
+2. After the Windows AeroGPU driver loads, supported D3D commands travel through
+   the `A3A0:0001` PCI device to Aero's Rust renderer and wgpu/Metal. This
+   accelerates guest graphics; it does not accelerate guest CPU execution.
 
-## Recommended first VM
+Standard VGA is deliberately retained as a boot and recovery adapter. AeroGPU
+has a separate QEMU display console.
 
-- Windows 7 SP1 x64 media that you legally own
-- 2048 MiB RAM
-- 1 vCPU
-- 40 GiB sparse raw disk
-- AeroGPU acceleration enabled
-
-Keep the ISO, product key, VM disk, certificates, generated drivers, and
-memory dumps outside the repository. None of those artifacts may be committed.
-
-## Build and check the host
+## Build and verify the host
 
 ```bash
-scripts/bootstrap-macos.sh
-scripts/build-macos.sh
-scripts/aero-vm.sh doctor
+bash scripts/build-qemu-aerogpu.sh build
+bash scripts/build-qemu-aerogpu.sh status
+bash scripts/tests/qemu-aerogpu.sh
+bash scripts/aero-vm.sh doctor
 ```
 
-`doctor` lists the selected Metal adapter. You can independently validate host
-presentation with:
+The generated QEMU binary and bridge are kept beneath
+`target/qemu-aerogpu/`. The exact upstream QEMU version is pinned in
+`qemu/supported-version`.
+
+## Create a Windows 7 VM
+
+Windows 7 SP1 x64, 4-8 GiB RAM, 2-6 vCPUs, and a 40 GiB qcow2 disk are
+reasonable starting values on a modern Apple Silicon Mac:
 
 ```bash
-target/debug/aero-macos --host-triangle
-```
-
-That triangle is host-only; it does not exercise the Windows driver.
-
-## Create and manage a VM
-
-The manager stores VMs under
-`${AERO_VM_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/aero/vms}`. Override
-`AERO_VM_HOME` when a different volume is preferable.
-
-```bash
-scripts/aero-vm.sh create win7-lab \
-  --ram 2048 \
-  --cpus 1 \
+bash scripts/aero-vm.sh create win7 \
+  --backend qemu \
+  --ram 8192 \
+  --cpus 5 \
   --disk-size 40G \
+  --disk-format qcow2 \
   --iso /path/to/windows-7-sp1-x64.iso \
-  --acceleration on
+  --acceleration on \
+  --renderer native
 
-scripts/aero-vm.sh list
-scripts/aero-vm.sh show win7-lab
-scripts/aero-vm.sh set win7-lab --ram 3072
-scripts/aero-vm.sh start win7-lab --install --trace
+bash scripts/aero-vm.sh start win7 --install
 ```
 
-The current interpreter advances a deterministic 3 GHz clock by one cycle per
-retired instruction. Timer-polling boot code can therefore take far longer
-than expected. For bring-up only, accelerate virtual time with:
+After installation, omit `--install` so the hard disk is selected:
 
 ```bash
-scripts/aero-vm.sh start win7-lab --install --trace -- \
-  --guest-cpu-hz 3000000
+bash scripts/aero-vm.sh start win7
 ```
 
-This changes the guest-visible TSC. It removes artificial timer waits but does
-not accelerate CPU instruction execution and is not representative timing.
-
-Use `--dry-run` to inspect the exact frontend command. Use `--headless` for a
-bounded diagnostic run:
+The interactive alternative is:
 
 ```bash
-scripts/aero-vm.sh start win7-lab --install --headless --max-ms 120000 --dry-run
+bash scripts/aero-vm.sh menu
 ```
 
-`trash NAME` moves a VM into a recoverable `.trash` directory under the VM
-root instead of permanently deleting its disk.
+VMs are stored outside the repository under
+`${AERO_VM_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/aero/vms}`. Media,
+product keys, VM disks, certificates, generated drivers, and memory dumps must
+not be committed.
 
-The disk is sparse: its virtual capacity is immediately visible to the guest,
-while host blocks are allocated as data is written. The manager deliberately
-does not resize installed filesystems or partitions. Back up the disk before
-using external storage tools.
-
-## Expected install lifecycle
-
-Today, `start win7-lab --install` can reach the visible Windows file-loading
-screen, but a complete installation is not yet validated. The intended
-lifecycle is:
-
-1. Start with the ISO and disk using `--boot cd-first`.
-2. Install Windows onto the VM's `disk.raw`.
-3. The first guest reset disables CD-first and selects the HDD.
-4. Subsequent normal starts use `--boot hdd`.
-5. Build the AeroGPU drivers on Windows with WDK 10.
-6. Enable Windows test signing, trust the local test certificate, and install
-   the x64 AeroGPU package.
-7. Confirm Device Manager, PCI BARs, interrupts, rings, fences, and scanout.
-8. Run `drivers\aerogpu\tests\win7\d3d9ex_triangle`.
-
-Driver build and guest installation commands are in
-`docs/WINDOWS7_GUEST_SETUP.md`. macOS cannot build the WDK driver package.
-
-## Acceleration switches
-
-- `--acceleration on` makes the manager pass `--aerogpu-wgpu`. This selects
-  the real Metal command executor, but Windows must still load the AeroGPU
-  driver before guest rendering is accelerated.
-- `--acceleration off` passes `--no-aerogpu` and uses the legacy VGA device.
-  This is useful for isolating boot/display problems, not for Aero Glass.
-- The frontend rejects non-Metal backends. Software fallback is disabled
-  unless explicitly requested.
-
-Do not judge acceleration from window smoothness or the host triangle. Require
-guest evidence: AeroGPU PnP success, driver logs, BAR/ring/fence activity, and
-the D3D9Ex test result.
-
-## Current limitations that affect VM choices
-
-- Windows reaches the visible “Windows is loading files…” bootloader screen,
-  then continues protected-mode processing; the graphical setup UI is not yet
-  reached.
-- One vCPU is the only recommended boot configuration.
-- Guest CPU execution is emulated and may remain slow even after GPU
-  acceleration works.
-- AeroGPU guest driver loading, D3D9Ex, DWM, and Aero Glass are unvalidated.
-- Snapshots exist in the headless machine tooling but are not yet integrated
-  into the native VM manager lifecycle.
-- Network, audio, USB, suspend/resume, and long-running disk durability are
-  not validated as a complete native Windows VM product.
-
-## Useful diagnostics
-
-The native frontend accepts `--trace-pci`, `--trace-scanout`, and related trace
-switches. These currently provide summaries and logging guidance rather than a
-complete per-access protocol trace.
-
-The headless runner supports deterministic instruction limits, register
-diagnostics, physical-memory inspection/dumps, bounded read/write watchpoints,
-and the diagnostic clock override:
+## VM management
 
 ```bash
-target/release/aero-machine \
-  --install-iso /path/to/windows.iso \
-  --boot cdrom \
-  --ram 1024 \
-  --guest-cpu-hz 3000000 \
-  --max-insts 100000000
+bash scripts/aero-vm.sh list
+bash scripts/aero-vm.sh show win7
+bash scripts/aero-vm.sh set win7 --ram 6144 --cpus 4
+bash scripts/aero-vm.sh set win7 --renderer noop
+bash scripts/aero-vm.sh resize win7 --disk-size 60G
+bash scripts/aero-vm.sh start win7 --dry-run
 ```
 
-`--dump-phys` output can contain proprietary guest bytes and must remain a
-local debugging artifact. `--patch-phys-u32-at` exists only for controlled
-experiments; it changes guest state and is never evidence of a real fix.
+Disk resizing changes only virtual disk capacity; it does not resize the
+Windows partition or filesystem. Shut down and back up the VM before resizing
+or installing experimental display drivers. `trash` is recoverable and moves
+the VM under the VM root's `.trash` directory.
 
-See `docs/STATUS.md` for the exact current boundary and `docs/DEBUGGING.md` for
-the debugging workflow.
+Renderer modes:
+
+- `native` runs supported guest GPU commands on Metal.
+- `noop` completes the protocol path without drawing.
+- `--acceleration off` removes AeroGPU and leaves standard VGA.
+
+If a driver install breaks the display:
+
+```bash
+bash scripts/aero-vm.sh set win7 --acceleration off
+bash scripts/aero-vm.sh start win7
+```
+
+## Install and validate the Windows driver
+
+Build the WDDM package on a Windows 10/11 x64 machine with WDK 10 and MSBuild;
+macOS cannot produce the driver binaries:
+
+```powershell
+pwsh ci/install-wdk.ps1
+pwsh ci/build-drivers.ps1 -ToolchainJson out/toolchain.json -Drivers aerogpu
+pwsh ci/build-aerogpu-dbgctl.ps1 -ToolchainJson out/toolchain.json
+pwsh ci/make-catalogs.ps1 -ToolchainJson out/toolchain.json
+pwsh ci/sign-drivers.ps1 -ToolchainJson out/toolchain.json
+pwsh ci/package-drivers.ps1
+```
+
+Transfer `out/packages/aerogpu/x64/` and `out/certs/aero-test.cer` to the
+test VM. Then follow `docs/WINDOWS7_GUEST_SETUP.md`, including test-signing and
+certificate steps.
+
+Validate incrementally:
+
+1. Confirm hardware ID `PCI\VEN_A3A0&DEV_0001`.
+2. Install the signed x64 package and reboot.
+3. Confirm Device Manager reports no Code 43/52.
+4. Run `aerogpu_dbgctl.exe --status` and check rings/fences/errors.
+5. Run `d3d9ex_triangle.exe`; retain its log and bitmap.
+6. Switch to the AeroGPU graphical console with QEMU's View menu or
+   `Ctrl+Alt+2`.
+7. Test DWM/Aero Glass only after the triangle passes.
+
+## Current boundary
+
+As of 2026-07-26:
+
+- Windows 7 installation and boot succeed under the managed QEMU VM.
+- The QEMU PCI device, Rust bridge, DMA, ring, fence, IRQ, native Metal
+  initialization, and second scanout console are implemented and host-tested.
+- The Windows AeroGPU driver has not yet been validated end-to-end in this
+  QEMU path.
+- D3D9/D3D9Ex is the initial native renderer target. D3D10/11 is incomplete.
+- AeroGPU migration and snapshots are disabled.
+
+Do not use boot success, window smoothness, or Metal adapter logs as proof of
+guest graphics acceleration. Require a loaded guest driver, advancing fences,
+no protocol error, and a passing D3D guest test.
+
+## Legacy in-process frontend
+
+`crates/aero-macos` and `aero-machine` remain useful for deterministic device
+and CPU bring-up, but they are not the recommended Windows VM runtime. Their
+interpreter timing, one-vCPU constraints, and browser-derived machine structure
+do not apply to the QEMU backend described above.

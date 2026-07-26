@@ -4,9 +4,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 QEMU_BIN="${AERO_QEMU_BIN:-$(bash "$REPO_ROOT/scripts/build-qemu-aerogpu.sh" print-bin)}"
+QEMU_BRIDGE="${AERO_QEMU_BRIDGE:-$(bash "$REPO_ROOT/scripts/build-qemu-aerogpu.sh" print-bridge)}"
 
 [[ -x "$QEMU_BIN" ]] || {
   echo "error: QEMU binary is not runnable: $QEMU_BIN" >&2
+  exit 1
+}
+[[ -f "$QEMU_BRIDGE" ]] || {
+  echo "error: AeroGPU bridge does not exist: $QEMU_BRIDGE" >&2
   exit 1
 }
 
@@ -17,7 +22,7 @@ QMP_OUTPUT="$(
     -machine q35 \
     -display none \
     -nodefaults \
-    -device aerogpu \
+    -device "aerogpu,bridge-path=$QEMU_BRIDGE,renderer=noop" \
     -S \
     -qmp stdio <<'EOF'
 {"execute":"qmp_capabilities"}

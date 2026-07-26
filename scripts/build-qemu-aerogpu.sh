@@ -19,12 +19,14 @@ Usage:
   scripts/build-qemu-aerogpu.sh build
   scripts/build-qemu-aerogpu.sh status
   scripts/build-qemu-aerogpu.sh print-bin
+  scripts/build-qemu-aerogpu.sh print-bridge
 
 Environment:
   AERO_QEMU_SOURCE   QEMU checkout (default: $XDG_CACHE_HOME/aero/qemu-TAG)
   AERO_QEMU_BUILD    Build directory (default: repository target/qemu-aerogpu/TAG/build)
   AERO_QEMU_PREFIX   Install directory (default: repository target/qemu-aerogpu/TAG/install)
   AERO_QEMU_JOBS     Ninja parallelism (default: host CPU count, capped at 8)
+  AERO_QEMU_RENDERER Build the native Metal renderer (default: 1; set 0 for protocol-only)
 EOF
 }
 
@@ -40,6 +42,9 @@ BUILD_ROOT="${AERO_QEMU_BUILD:-$REPO_ROOT/target/qemu-aerogpu/$QEMU_TAG/build}"
 INSTALL_ROOT="${AERO_QEMU_PREFIX:-$REPO_ROOT/target/qemu-aerogpu/$QEMU_TAG/install}"
 PATCH_DIR="$REPO_ROOT/qemu/patches/$QEMU_TAG"
 QEMU_BIN="$INSTALL_ROOT/bin/qemu-system-x86_64"
+BRIDGE_TARGET="$REPO_ROOT/target/qemu-aerogpu/bridge"
+BRIDGE_BUILD="$BRIDGE_TARGET/release/libaero_qemu_bridge.dylib"
+BRIDGE_LIB="$INSTALL_ROOT/lib/libaero_qemu_bridge.dylib"
 
 host_jobs() {
   local jobs=2
@@ -94,10 +99,32 @@ configure_and_build() {
   command -v git >/dev/null || die "git is required"
   command -v ninja >/dev/null || die "ninja is required (install with: brew install ninja)"
 
+  local -a bridge_features=()
+  if [[ "${AERO_QEMU_RENDERER:-1}" == 1 ]]; then
+    bridge_features=(--features native-renderer)
+  elif [[ "${AERO_QEMU_RENDERER:-1}" != 0 ]]; then
+    die "AERO_QEMU_RENDERER must be 0 or 1"
+  fi
+  if [[ "$(uname -s)" == Darwin ]]; then
+    # Apple's linker can emit a malformed LINKEDIT string pool when Rust's
+    # release dead stripping is used for this large wgpu cdylib. Keeping the
+    # bridge's exported/dependency code produces a valid, loadable dylib.
+    CARGO_TARGET_DIR="$BRIDGE_TARGET" cargo rustc --release --locked \
+      -p aero-qemu-bridge "${bridge_features[@]}" -- -C link-dead-code=yes
+    xcrun dyld_info -validate_only "$BRIDGE_BUILD" >/dev/null
+  else
+    CARGO_TARGET_DIR="$BRIDGE_TARGET" cargo build --release --locked \
+      -p aero-qemu-bridge "${bridge_features[@]}"
+  fi
+  [[ -f "$BRIDGE_BUILD" ]] || die "bridge build completed without $BRIDGE_BUILD"
+  mkdir -p "$INSTALL_ROOT/lib"
+  install -m 755 "$BRIDGE_BUILD" "$BRIDGE_LIB"
+
   mkdir -p "$BUILD_ROOT" "$INSTALL_ROOT"
   local -a configure_args=(
     --target-list=x86_64-softmmu
     "--prefix=$INSTALL_ROOT"
+    "--extra-cflags=-I$REPO_ROOT/qemu/include"
     --enable-cocoa
     --disable-docs
     --disable-werror
@@ -128,8 +155,10 @@ configure_and_build() {
   fi
   "$QEMU_BIN" -device help | grep 'name "aerogpu"' >/dev/null ||
     die "built QEMU does not contain the AeroGPU device"
+  [[ -f "$BRIDGE_LIB" ]] || die "installed AeroGPU bridge is missing"
   "$QEMU_BIN" --version | head -1
   echo "AeroGPU QEMU: $QEMU_BIN"
+  echo "AeroGPU bridge: $BRIDGE_LIB"
 }
 
 cmd_status() {
@@ -138,6 +167,7 @@ cmd_status() {
   echo "source: $SOURCE_DIR"
   echo "build: $BUILD_ROOT"
   echo "install: $INSTALL_ROOT"
+  echo "bridge: $BRIDGE_LIB"
   if [[ -x "$QEMU_BIN" ]]; then
     "$QEMU_BIN" --version | head -1
     if "$QEMU_BIN" -device help | grep 'name "aerogpu"' >/dev/null; then
@@ -148,6 +178,11 @@ cmd_status() {
     fi
   else
     echo "AeroGPU QEMU: not built"
+  fi
+  if [[ -f "$BRIDGE_LIB" ]]; then
+    echo "AeroGPU bridge: available"
+  else
+    echo "AeroGPU bridge: missing"
   fi
 }
 
@@ -166,6 +201,11 @@ case "${1:-build}" in
     (($# == 1)) || die "print-bin accepts no arguments"
     [[ -x "$QEMU_BIN" ]] || die "AeroGPU QEMU is not built; run $0 build"
     printf '%s\n' "$QEMU_BIN"
+    ;;
+  print-bridge)
+    (($# == 1)) || die "print-bridge accepts no arguments"
+    [[ -f "$BRIDGE_LIB" ]] || die "AeroGPU bridge is not built; run $0 build"
+    printf '%s\n' "$BRIDGE_LIB"
     ;;
   help | --help | -h)
     usage

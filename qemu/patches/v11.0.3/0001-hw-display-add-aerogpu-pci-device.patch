@@ -1,0 +1,456 @@
+From: Aero contributors
+Subject: [PATCH] hw/display: add AeroGPU PCI device
+
+Add the canonical AeroGPU PCI identity, 64 KiB MMIO BAR, and 64 MiB
+prefetchable VRAM BAR. Load Aero's versioned Rust bridge at realize time,
+route BAR0 accesses and PCI DMA through it, and deliver its interrupt level.
+
+The device supports native rendering and a protocol-only noop mode. Migration
+is disabled until the Rust protocol and renderer state can be serialized.
+
+diff --git a/hw/display/Kconfig b/hw/display/Kconfig
+index 1e95ab2..274e876 100644
+--- a/hw/display/Kconfig
++++ b/hw/display/Kconfig
+@@ -66,6 +66,11 @@ config BOCHS_DISPLAY
+     select VGA
+     select EDID
+ 
++config AEROGPU
++    bool
++    default y if PCI_DEVICES
++    depends on PCI
++
+ config FRAMEBUFFER
+     bool
+ 
+diff --git a/hw/display/aerogpu-pci.c b/hw/display/aerogpu-pci.c
+new file mode 100644
+index 0000000..da5e067
+--- /dev/null
++++ b/hw/display/aerogpu-pci.c
+@@ -0,0 +1,412 @@
++/*
++ * AeroGPU PCI display adapter backed by Aero's Rust device core.
++ *
++ * Copyright (c) 2026 Aero contributors
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++#include "qemu/units.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/pci/pci_device.h"
++#include "migration/vmstate.h"
++#include "qapi/error.h"
++#include "qom/object.h"
++#include "ui/console.h"
++
++#include <dlfcn.h>
++
++#include "aerogpu-qemu-bridge.h"
++
++#define TYPE_AEROGPU "aerogpu"
++OBJECT_DECLARE_SIMPLE_TYPE(AeroGPUState, AEROGPU)
++
++#define AEROGPU_VENDOR_ID       0xa3a0
++#define AEROGPU_DEVICE_ID       0x0001
++#define AEROGPU_SUBSYSTEM_ID    0x0001
++#define AEROGPU_BAR0_SIZE       (64 * KiB)
++#define AEROGPU_BAR1_SIZE       (64 * MiB)
++
++#define AEROGPU_TICK_NS         1000000
++#define AEROGPU_ERROR_LEN       256
++#define AEROGPU_MAX_SCANOUT_DIM 8192
++#define AEROGPU_MAX_SCANOUT_BYTES (64 * MiB)
++
++#define AEROGPU_FORMAT_B8G8R8A8_UNORM      1
++#define AEROGPU_FORMAT_B8G8R8X8_UNORM      2
++#define AEROGPU_FORMAT_R8G8B8A8_UNORM      3
++#define AEROGPU_FORMAT_R8G8B8X8_UNORM      4
++#define AEROGPU_FORMAT_B8G8R8A8_UNORM_SRGB 7
++#define AEROGPU_FORMAT_B8G8R8X8_UNORM_SRGB 8
++#define AEROGPU_FORMAT_R8G8B8A8_UNORM_SRGB 9
++#define AEROGPU_FORMAT_R8G8B8X8_UNORM_SRGB 10
++
++struct AeroGPUState {
++    PCIDevice parent_obj;
++    MemoryRegion mmio;
++    MemoryRegion vram;
++    QemuConsole *con;
++    QEMUTimer *tick_timer;
++    void *bridge_module;
++    void *bridge;
++    const AeroGpuBridgeApi *api;
++    char *bridge_path;
++    char *renderer;
++};
++
++static int32_t aerogpu_dma_read(void *opaque, uint64_t gpa,
++                                uint8_t *dst, size_t len)
++{
++    AeroGPUState *s = opaque;
++
++    return pci_dma_read(&s->parent_obj, gpa, dst, len) == MEMTX_OK;
++}
++
++static int32_t aerogpu_dma_write(void *opaque, uint64_t gpa,
++                                 const uint8_t *src, size_t len)
++{
++    AeroGPUState *s = opaque;
++
++    return pci_dma_write(&s->parent_obj, gpa, src, len) == MEMTX_OK;
++}
++
++static const AeroGpuBridgeMemory aerogpu_memory_callbacks = {
++    .read = aerogpu_dma_read,
++    .write = aerogpu_dma_write,
++};
++
++static void aerogpu_sync_pci_command(AeroGPUState *s)
++{
++    uint16_t command = pci_get_word(s->parent_obj.config + PCI_COMMAND);
++
++    s->api->sync_pci_command(s->bridge, command);
++}
++
++static void aerogpu_update_irq(AeroGPUState *s)
++{
++    pci_set_irq(&s->parent_obj, s->api->irq_level(s->bridge) != 0);
++}
++
++static uint64_t aerogpu_mmio_read(void *opaque, hwaddr addr, unsigned size)
++{
++    AeroGPUState *s = opaque;
++
++    aerogpu_sync_pci_command(s);
++    return s->api->mmio_read(s->bridge, addr, size);
++}
++
++static void aerogpu_mmio_write(void *opaque, hwaddr addr,
++                               uint64_t value, unsigned size)
++{
++    AeroGPUState *s = opaque;
++    AeroGpuBridgeMemory memory = aerogpu_memory_callbacks;
++
++    memory.opaque = s;
++    aerogpu_sync_pci_command(s);
++    s->api->mmio_write(s->bridge, &memory,
++                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
++                       addr, value, size);
++    aerogpu_update_irq(s);
++}
++
++static const MemoryRegionOps aerogpu_mmio_ops = {
++    .read = aerogpu_mmio_read,
++    .write = aerogpu_mmio_write,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++    .impl.min_access_size = 4,
++    .impl.max_access_size = 4,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++};
++
++static bool aerogpu_scanout_is_bgra(uint32_t format)
++{
++    return format == AEROGPU_FORMAT_B8G8R8A8_UNORM ||
++           format == AEROGPU_FORMAT_B8G8R8X8_UNORM ||
++           format == AEROGPU_FORMAT_B8G8R8A8_UNORM_SRGB ||
++           format == AEROGPU_FORMAT_B8G8R8X8_UNORM_SRGB;
++}
++
++static bool aerogpu_scanout_is_rgba(uint32_t format)
++{
++    return format == AEROGPU_FORMAT_R8G8B8A8_UNORM ||
++           format == AEROGPU_FORMAT_R8G8B8X8_UNORM ||
++           format == AEROGPU_FORMAT_R8G8B8A8_UNORM_SRGB ||
++           format == AEROGPU_FORMAT_R8G8B8X8_UNORM_SRGB;
++}
++
++static bool aerogpu_scanout_valid(const AeroGpuBridgeScanout *scanout)
++{
++    uint64_t row_bytes;
++    uint64_t last_row;
++
++    if (!scanout->enabled || !scanout->fb_gpa ||
++        !scanout->width || !scanout->height ||
++        scanout->width > AEROGPU_MAX_SCANOUT_DIM ||
++        scanout->height > AEROGPU_MAX_SCANOUT_DIM ||
++        (!aerogpu_scanout_is_bgra(scanout->format) &&
++         !aerogpu_scanout_is_rgba(scanout->format))) {
++        return false;
++    }
++
++    row_bytes = (uint64_t)scanout->width * 4;
++    if (scanout->pitch_bytes < row_bytes ||
++        (uint64_t)scanout->pitch_bytes * scanout->height >
++            AEROGPU_MAX_SCANOUT_BYTES) {
++        return false;
++    }
++
++    last_row = (uint64_t)(scanout->height - 1) * scanout->pitch_bytes;
++    return scanout->fb_gpa <= UINT64_MAX - last_row &&
++           scanout->fb_gpa + last_row <= UINT64_MAX - row_bytes;
++}
++
++static void aerogpu_display_update(void *opaque)
++{
++    AeroGPUState *s = opaque;
++    AeroGpuBridgeScanout scanout;
++    DisplaySurface *surface;
++    uint8_t *src;
++    uint8_t *dst;
++    uint32_t x;
++    uint32_t y;
++    size_t row_bytes;
++
++    if (!s->api->scanout(s->bridge, &scanout) ||
++        !aerogpu_scanout_valid(&scanout)) {
++        return;
++    }
++
++    surface = qemu_console_surface(s->con);
++    if (surface_width(surface) != scanout.width ||
++        surface_height(surface) != scanout.height) {
++        qemu_console_resize(s->con, scanout.width, scanout.height);
++        surface = qemu_console_surface(s->con);
++    }
++
++    row_bytes = (size_t)scanout.width * 4;
++    src = g_malloc(row_bytes);
++    dst = surface_data(surface);
++    for (y = 0; y < scanout.height; y++) {
++        uint64_t row_gpa = scanout.fb_gpa +
++                           (uint64_t)y * scanout.pitch_bytes;
++        uint8_t *dst_row = dst + (size_t)y * surface_stride(surface);
++
++        if (pci_dma_read(&s->parent_obj, row_gpa, src, row_bytes) !=
++            MEMTX_OK) {
++            memset(dst_row, 0, row_bytes);
++            continue;
++        }
++
++        if (aerogpu_scanout_is_bgra(scanout.format)) {
++            for (x = 0; x < scanout.width; x++) {
++                dst_row[x * 4 + 0] = src[x * 4 + 0];
++                dst_row[x * 4 + 1] = src[x * 4 + 1];
++                dst_row[x * 4 + 2] = src[x * 4 + 2];
++                dst_row[x * 4 + 3] = 0xff;
++            }
++        } else {
++            for (x = 0; x < scanout.width; x++) {
++                dst_row[x * 4 + 0] = src[x * 4 + 2];
++                dst_row[x * 4 + 1] = src[x * 4 + 1];
++                dst_row[x * 4 + 2] = src[x * 4 + 0];
++                dst_row[x * 4 + 3] = 0xff;
++            }
++        }
++    }
++    g_free(src);
++    dpy_gfx_update_full(s->con);
++}
++
++static const GraphicHwOps aerogpu_gfx_ops = {
++    .gfx_update = aerogpu_display_update,
++};
++
++static void aerogpu_reset(DeviceState *dev)
++{
++    AeroGPUState *s = AEROGPU(dev);
++
++    if (s->bridge) {
++        s->api->reset(s->bridge);
++        aerogpu_sync_pci_command(s);
++    }
++    pci_set_irq(&s->parent_obj, 0);
++}
++
++static void aerogpu_tick(void *opaque)
++{
++    AeroGPUState *s = opaque;
++    AeroGpuBridgeMemory memory = aerogpu_memory_callbacks;
++    int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++
++    memory.opaque = s;
++    aerogpu_sync_pci_command(s);
++    s->api->tick(s->bridge, &memory, now_ns);
++    aerogpu_update_irq(s);
++    timer_mod(s->tick_timer, now_ns + AEROGPU_TICK_NS);
++}
++
++static bool aerogpu_load_bridge(AeroGPUState *s, Error **errp)
++{
++    AeroGpuBridgeGetApiFn get_api;
++    uint32_t renderer = AEROGPU_QEMU_RENDERER_NATIVE;
++    char bridge_error[AEROGPU_ERROR_LEN] = { 0 };
++
++    if (!s->bridge_path || !s->bridge_path[0]) {
++        error_setg(errp, "aerogpu: bridge-path is required");
++        return false;
++    }
++
++    if (s->renderer && s->renderer[0]) {
++        if (!strcmp(s->renderer, "native") || !strcmp(s->renderer, "metal")) {
++            renderer = AEROGPU_QEMU_RENDERER_NATIVE;
++        } else if (!strcmp(s->renderer, "noop")) {
++            renderer = AEROGPU_QEMU_RENDERER_NOOP;
++        } else {
++            error_setg(errp, "aerogpu: renderer must be native, metal, or noop");
++            return false;
++        }
++    }
++
++    s->bridge_module = dlopen(s->bridge_path, RTLD_NOW | RTLD_LOCAL);
++    if (!s->bridge_module) {
++        error_setg(errp, "aerogpu: failed to load bridge '%s': %s",
++                   s->bridge_path, dlerror());
++        return false;
++    }
++
++    get_api = (AeroGpuBridgeGetApiFn)dlsym(
++        s->bridge_module, "aerogpu_qemu_bridge_get_api");
++    if (!get_api) {
++        error_setg(errp, "aerogpu: bridge is missing aerogpu_qemu_bridge_get_api");
++        goto fail;
++    }
++
++    s->api = get_api();
++    if (!s->api ||
++        s->api->abi_version != AEROGPU_QEMU_BRIDGE_ABI_VERSION ||
++        s->api->struct_size < sizeof(AeroGpuBridgeApi)) {
++        error_setg(errp, "aerogpu: incompatible bridge ABI");
++        goto fail;
++    }
++
++    s->bridge = s->api->create(renderer, 60,
++                               bridge_error, sizeof(bridge_error));
++    if (!s->bridge) {
++        error_setg(errp, "aerogpu: failed to create bridge: %s",
++                   bridge_error[0] ? bridge_error : "unknown error");
++        goto fail;
++    }
++    return true;
++
++fail:
++    s->api = NULL;
++    dlclose(s->bridge_module);
++    s->bridge_module = NULL;
++    return false;
++}
++
++static void aerogpu_realize(PCIDevice *pdev, Error **errp)
++{
++    AeroGPUState *s = AEROGPU(pdev);
++    Object *obj = OBJECT(s);
++
++    if (!aerogpu_load_bridge(s, errp)) {
++        return;
++    }
++
++    memory_region_init_io(&s->mmio, obj, &aerogpu_mmio_ops, s,
++                          "aerogpu-mmio", AEROGPU_BAR0_SIZE);
++    memory_region_init_ram(&s->vram, obj, "aerogpu-vram",
++                           AEROGPU_BAR1_SIZE, errp);
++    if (*errp) {
++        return;
++    }
++
++    s->con = graphic_console_init(DEVICE(pdev), 0, &aerogpu_gfx_ops, s);
++    pci_register_bar(pdev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
++    pci_register_bar(pdev, 1, PCI_BASE_ADDRESS_MEM_PREFETCH, &s->vram);
++    pci_config_set_interrupt_pin(pdev->config, 1);
++
++    s->tick_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, aerogpu_tick, s);
++    timer_mod(s->tick_timer,
++              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + AEROGPU_TICK_NS);
++}
++
++static void aerogpu_exit(PCIDevice *pdev)
++{
++    AeroGPUState *s = AEROGPU(pdev);
++
++    if (s->tick_timer) {
++        timer_free(s->tick_timer);
++        s->tick_timer = NULL;
++    }
++    if (s->bridge) {
++        s->api->destroy(s->bridge);
++        s->bridge = NULL;
++    }
++    if (s->bridge_module) {
++        dlclose(s->bridge_module);
++        s->bridge_module = NULL;
++    }
++}
++
++static const VMStateDescription vmstate_aerogpu = {
++    .name = "aerogpu",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    /* Rust protocol and renderer state is not serializable yet. */
++    .unmigratable = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_PCI_DEVICE(parent_obj, AeroGPUState),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static const Property aerogpu_properties[] = {
++    DEFINE_PROP_STRING("bridge-path", AeroGPUState, bridge_path),
++    DEFINE_PROP_STRING("renderer", AeroGPUState, renderer),
++};
++
++static void aerogpu_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
++
++    pc->vendor_id = AEROGPU_VENDOR_ID;
++    pc->device_id = AEROGPU_DEVICE_ID;
++    pc->revision = 0;
++    pc->class_id = PCI_CLASS_DISPLAY_VGA;
++    pc->subsystem_vendor_id = AEROGPU_VENDOR_ID;
++    pc->subsystem_id = AEROGPU_SUBSYSTEM_ID;
++    pc->realize = aerogpu_realize;
++    pc->exit = aerogpu_exit;
++
++    dc->desc = "AeroGPU paravirtualized display adapter";
++    dc->vmsd = &vmstate_aerogpu;
++    device_class_set_legacy_reset(dc, aerogpu_reset);
++    set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
++    device_class_set_props(dc, aerogpu_properties);
++}
++
++static const TypeInfo aerogpu_info = {
++    .name = TYPE_AEROGPU,
++    .parent = TYPE_PCI_DEVICE,
++    .instance_size = sizeof(AeroGPUState),
++    .class_init = aerogpu_class_init,
++    .interfaces = (const InterfaceInfo[]) {
++        { INTERFACE_CONVENTIONAL_PCI_DEVICE },
++        { },
++    },
++};
++
++static void aerogpu_register_types(void)
++{
++    type_register_static(&aerogpu_info);
++}
++
++type_init(aerogpu_register_types)
+diff --git a/hw/display/meson.build b/hw/display/meson.build
+index e730c28..f08158c 100644
+--- a/hw/display/meson.build
++++ b/hw/display/meson.build
+@@ -22,6 +22,7 @@ system_ss.add(when: 'CONFIG_VGA_ISA', if_true: files('vga-isa.c'))
+ system_ss.add(when: 'CONFIG_VGA_MMIO', if_true: files('vga-mmio.c'))
+ system_ss.add(when: 'CONFIG_VMWARE_VGA', if_true: files('vmware_vga.c'))
+ system_ss.add(when: 'CONFIG_BOCHS_DISPLAY', if_true: files('bochs-display.c'))
++system_ss.add(when: 'CONFIG_AEROGPU', if_true: files('aerogpu-pci.c'))
+ 
+ system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_fimd.c'))
+ system_ss.add(when: 'CONFIG_FRAMEBUFFER', if_true: files('framebuffer.c'))

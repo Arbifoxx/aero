@@ -37,5 +37,8 @@ Then inspect `%WINDIR%\inf\setupapi.dev.log`, Device Manager status,
 `drivers\aerogpu\tests\win7\d3d9ex_triangle`; it reports `PASS:`/`FAIL:` and
 supports the guest validation workflow documented in that directory.
 
-Current limitation: the native machine has not yet reached Windows PnP with the
-reference ISO, so none of these guest steps has been validated on macOS.
+Current limitation: Windows 7 now installs and boots through the managed QEMU
+backend, and the AeroGPU host bridge initializes on Metal. The driver
+installation, first command submission, and `d3d9ex_triangle` result have not
+yet been validated end-to-end on this QEMU path. Keep standard VGA enabled and
+back up the test VM before installing the display driver.

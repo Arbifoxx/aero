@@ -1,5 +1,17 @@
 # macOS native architecture
 
+For a complete Windows 7 VM, the primary architecture is now:
+
+```text
+Windows 7 x86_64 → QEMU 11 TCG/PC platform → AeroGPU PCI device
+                                               ↕ versioned C ABI + guest DMA
+                                        Rust AeroGPU core → wgpu → Metal
+```
+
+QEMU supplies the mature CPU, SMP, firmware, storage, and platform emulation.
+The repository patch adds only the AeroGPU PCI adapter. See `qemu/README.md`
+and `docs/MACOS_ACCELERATED_VM_GUIDE.md` for the supported operator workflow.
+
 `crates/aero-macos` is the native Apple Silicon bring-up frontend. It deliberately reuses the canonical Rust machine rather than the browser host:
 
 ```text
@@ -10,7 +22,7 @@ winit window/input → aero-macos → aero_machine::Machine → AeroGPU BAR0/BAR
 
 The executable uses a Metal-only `wgpu::Instance`; adapter selection is logged and a non-Metal adapter is rejected. `--host-triangle` isolates the host graphics path before any guest command is involved. Normal mode runs bounded machine slices from the event loop, uploads `Machine::display_framebuffer()` to a native texture, and presents it. This is cooperative rather than a dedicated VM thread because `Machine` intentionally contains `Rc` device state and is not `Send`; no unsafe cross-thread wrapper is used.
 
-Useful commands:
+Useful legacy bring-up commands:
 
 ```bash
 scripts/bootstrap-macos.sh
