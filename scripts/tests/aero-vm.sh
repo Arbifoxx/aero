@@ -9,6 +9,7 @@ trap 'rm -rf -- "$TEST_ROOT"' EXIT
 export AERO_VM_HOME="$TEST_ROOT/vms"
 export AERO_MACOS_BIN=/usr/bin/true
 export AERO_MACHINE_BIN=/usr/bin/true
+export AERO_QEMU_BIN=/usr/bin/true
 
 ISO="$TEST_ROOT/install.iso"
 touch "$ISO"
@@ -17,7 +18,9 @@ touch "$ISO"
   --ram 1024 \
   --cpus 1 \
   --disk-size 1G \
+  --disk-format raw \
   --iso "$ISO" \
+  --backend aero \
   --acceleration on
 
 [[ -f "$AERO_VM_HOME/test-vm/disk.raw" ]]
@@ -44,5 +47,28 @@ HEADLESS_COMMAND="$("$REPO_ROOT/scripts/aero-vm.sh" start test-vm --install --he
 "$REPO_ROOT/scripts/aero-vm.sh" trash test-vm --yes >/dev/null
 [[ ! -d "$AERO_VM_HOME/test-vm" ]]
 find "$AERO_VM_HOME/.trash" -mindepth 1 -maxdepth 1 -type d | grep -q .
+
+"$REPO_ROOT/scripts/aero-vm.sh" create qemu-vm \
+  --backend qemu \
+  --ram 4096 \
+  --cpus 2 \
+  --disk-size 1G \
+  --disk-format raw \
+  --iso "$ISO" \
+  --acceleration on >/dev/null
+
+QEMU_COMMAND="$("$REPO_ROOT/scripts/aero-vm.sh" start qemu-vm --install --dry-run 2>/dev/null)"
+[[ "$QEMU_COMMAND" == *"-accel tcg\\,thread=multi"* ]]
+[[ "$QEMU_COMMAND" == *"-smp 2"* ]]
+[[ "$QEMU_COMMAND" == *"-m 4096"* ]]
+[[ "$QEMU_COMMAND" == *"-device aerogpu"* ]]
+[[ "$QEMU_COMMAND" == *"-cdrom"* ]]
+
+if command -v qemu-img >/dev/null 2>&1; then
+  "$REPO_ROOT/scripts/aero-vm.sh" resize qemu-vm --disk-size 2G >/dev/null
+  [[ "$(<"$AERO_VM_HOME/qemu-vm/disk_size")" == 2G ]]
+fi
+
+printf 'q\n' | "$REPO_ROOT/scripts/aero-vm.sh" menu >/dev/null
 
 echo "aero-vm manager tests passed"

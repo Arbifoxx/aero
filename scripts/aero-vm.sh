@@ -21,14 +21,17 @@ Manage local Aero macOS virtual machines.
 
 Usage:
   scripts/aero-vm.sh create NAME [--ram MiB] [--cpus N] [--disk-size SIZE]
-                                  [--iso PATH] [--acceleration on|off]
+                                  [--disk-format raw|qcow2] [--iso PATH]
+                                  [--backend qemu|aero] [--acceleration on|off]
   scripts/aero-vm.sh list
   scripts/aero-vm.sh show NAME
   scripts/aero-vm.sh set NAME [--ram MiB] [--cpus N] [--iso PATH|none]
-                               [--acceleration on|off]
+                               [--backend qemu|aero] [--acceleration on|off]
+  scripts/aero-vm.sh resize NAME --disk-size SIZE
   scripts/aero-vm.sh start NAME [--install] [--headless] [--max-ms MS]
                                 [--trace] [--dry-run] [-- EXTRA_ARGS...]
   scripts/aero-vm.sh doctor
+  scripts/aero-vm.sh menu
   scripts/aero-vm.sh trash NAME [--yes]
 
 Environment:
@@ -36,10 +39,12 @@ Environment:
                      $HOME/.local/share/aero/vms)
   AERO_MACOS_BIN     Override the aero-macos executable
   AERO_MACHINE_BIN   Override the headless aero-machine executable
+  AERO_QEMU_BIN      Override the AeroGPU-enabled qemu-system-x86_64
 
 Notes:
-  - Windows 7 reaches its file-loading screen; a complete install is not validated.
-  - One vCPU is the supported bring-up setting. More than one enables incomplete SMP.
+  - QEMU is the recommended native backend. Its AeroGPU device currently enumerates,
+    but accelerated command execution is not connected yet.
+  - The Aero backend remains available for device-model bring-up.
   - VM disks and Windows media remain outside the repository and are never bundled.
 EOF
 }
@@ -78,11 +83,37 @@ validate_acceleration() {
   esac
 }
 
+validate_backend() {
+  case "$1" in
+    qemu | aero) ;;
+    *) die "backend must be 'qemu' or 'aero'" ;;
+  esac
+}
+
+validate_disk_format() {
+  case "$1" in
+    raw | qcow2) ;;
+    *) die "disk format must be 'raw' or 'qcow2'" ;;
+  esac
+}
+
 validate_disk_size() {
   local value
   value="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
   [[ "$value" =~ ^[1-9][0-9]*[MGT]$ ]] ||
     die "disk size must look like 40960M, 40G, or 1T"
+}
+
+size_to_bytes() {
+  local value
+  value="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  validate_disk_size "$value"
+  local number="${value%?}"
+  case "${value: -1}" in
+    M) printf '%s\n' "$((10#$number * 1024 * 1024))" ;;
+    G) printf '%s\n' "$((10#$number * 1024 * 1024 * 1024))" ;;
+    T) printf '%s\n' "$((10#$number * 1024 * 1024 * 1024 * 1024))" ;;
+  esac
 }
 
 absolute_existing_file() {
@@ -114,6 +145,17 @@ read_setting() {
   printf '%s\n' "$REPLY"
 }
 
+read_setting_default() {
+  local dir="$1"
+  local key="$2"
+  local default="$3"
+  if [[ -f "$dir/$key" ]]; then
+    read_setting "$dir" "$key"
+  else
+    printf '%s\n' "$default"
+  fi
+}
+
 write_setting() {
   local dir="$1"
   local key="$2"
@@ -121,10 +163,17 @@ write_setting() {
   printf '%s\n' "$value" >"$dir/$key"
 }
 
-create_sparse_disk() {
+create_disk() {
   local path="$1"
-  local size
+  local size format
   size="$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]')"
+  format="$3"
+  if [[ "$format" == qcow2 ]]; then
+    command -v qemu-img >/dev/null 2>&1 ||
+      die "qemu-img is required to create qcow2 disks"
+    qemu-img create -q -f qcow2 "$path" "$size"
+    return
+  fi
   if command -v mkfile >/dev/null 2>&1; then
     mkfile -n "$size" "$path"
     return
@@ -134,6 +183,33 @@ create_sparse_disk() {
     return
   fi
   die "neither mkfile nor truncate is available to create a sparse disk"
+}
+
+vm_disk_path() {
+  local dir="$1"
+  local format
+  format="$(read_setting_default "$dir" disk_format raw)"
+  case "$format" in
+    raw) printf '%s/disk.raw\n' "$dir" ;;
+    qcow2) printf '%s/disk.qcow2\n' "$dir" ;;
+    *) die "unsupported disk format in VM metadata: $format" ;;
+  esac
+}
+
+find_qemu_binary() {
+  if [[ -n "${AERO_QEMU_BIN:-}" ]]; then
+    [[ -x "$AERO_QEMU_BIN" ]] || die "AERO_QEMU_BIN is not runnable: $AERO_QEMU_BIN"
+    printf '%s\n' "$AERO_QEMU_BIN"
+    return
+  fi
+  local tag
+  tag="$(sed -n '1p' "$REPO_ROOT/qemu/supported-version")"
+  local bundled="$REPO_ROOT/target/qemu-aerogpu/$tag/install/bin/qemu-system-x86_64"
+  if [[ -x "$bundled" ]]; then
+    printf '%s\n' "$bundled"
+    return
+  fi
+  die "AeroGPU QEMU is not built; run scripts/build-qemu-aerogpu.sh build"
 }
 
 find_binary() {
@@ -167,7 +243,9 @@ cmd_create() {
   local ram=2048
   local cpus=1
   local disk_size=40G
+  local disk_format=auto
   local iso=""
+  local backend=qemu
   local acceleration=on
   while (($#)); do
     case "$1" in
@@ -186,9 +264,19 @@ cmd_create() {
         disk_size="$2"
         shift 2
         ;;
+      --disk-format)
+        (($# >= 2)) || die "--disk-format requires raw or qcow2"
+        disk_format="$2"
+        shift 2
+        ;;
       --iso)
         (($# >= 2)) || die "--iso requires a path"
         iso="$(absolute_existing_file "$2")"
+        shift 2
+        ;;
+      --backend)
+        (($# >= 2)) || die "--backend requires qemu or aero"
+        backend="$2"
         shift 2
         ;;
       --acceleration)
@@ -203,8 +291,17 @@ cmd_create() {
   validate_ram "$ram"
   validate_cpus "$cpus"
   validate_disk_size "$disk_size"
+  validate_backend "$backend"
+  if [[ "$disk_format" == auto ]]; then
+    [[ "$backend" == qemu ]] && disk_format=qcow2 || disk_format=raw
+  fi
+  validate_disk_format "$disk_format"
+  [[ "$backend" == qemu || "$disk_format" == raw ]] ||
+    die "the Aero backend currently requires a raw disk"
   validate_acceleration "$acceleration"
-  ((10#$cpus == 1)) || warn "SMP is incomplete; Windows boot testing should use one vCPU"
+  if [[ "$backend" == aero ]] && ((10#$cpus != 1)); then
+    warn "the Aero backend's SMP support is incomplete; QEMU is recommended for multiple vCPUs"
+  fi
 
   mkdir -p "$VM_ROOT"
   local final_dir
@@ -216,20 +313,24 @@ cmd_create() {
   local cleanup_dir="$temp_dir"
   trap 'if [[ -n "${cleanup_dir:-}" && -d "$cleanup_dir" ]]; then rm -rf -- "$cleanup_dir"; fi' EXIT
 
-  create_sparse_disk "$temp_dir/disk.raw" "$disk_size"
-  write_setting "$temp_dir" version 1
+  local disk_name="disk.$disk_format"
+  create_disk "$temp_dir/$disk_name" "$disk_size" "$disk_format"
+  write_setting "$temp_dir" version 2
   write_setting "$temp_dir" ram_mib "$ram"
   write_setting "$temp_dir" cpus "$cpus"
+  write_setting "$temp_dir" backend "$backend"
   write_setting "$temp_dir" acceleration "$acceleration"
   write_setting "$temp_dir" install_iso "$iso"
   write_setting "$temp_dir" disk_size "$disk_size"
+  write_setting "$temp_dir" disk_format "$disk_format"
   mv "$temp_dir" "$final_dir"
   cleanup_dir=""
   trap - EXIT
 
   echo "created VM '$name'"
   echo "  directory: $final_dir"
-  echo "  disk: $final_dir/disk.raw ($disk_size sparse)"
+  echo "  backend: $backend"
+  echo "  disk: $final_dir/$disk_name ($disk_size $disk_format)"
   echo "  RAM/vCPUs: ${ram} MiB / $cpus"
   if [[ -n "$iso" ]]; then
     echo "  install media: $iso"
@@ -241,17 +342,20 @@ cmd_create() {
 
 cmd_list() {
   mkdir -p "$VM_ROOT"
-  printf '%-24s %-10s %-6s %-13s %s\n' "NAME" "RAM(MiB)" "vCPUs" "ACCELERATION" "INSTALL ISO"
+  printf '%-24s %-8s %-10s %-6s %-8s %-13s %s\n' \
+    "NAME" "BACKEND" "RAM(MiB)" "vCPUs" "DISK" "AEROGPU" "INSTALL ISO"
   local found=0
   local dir
   shopt -s nullglob
   for dir in "$VM_ROOT"/*; do
     [[ -d "$dir" && -f "$dir/version" ]] || continue
     found=1
-    printf '%-24s %-10s %-6s %-13s %s\n' \
+    printf '%-24s %-8s %-10s %-6s %-8s %-13s %s\n' \
       "$(basename "$dir")" \
+      "$(read_setting_default "$dir" backend aero)" \
       "$(read_setting "$dir" ram_mib)" \
       "$(read_setting "$dir" cpus)" \
+      "$(read_setting_default "$dir" disk_format raw)" \
       "$(read_setting "$dir" acceleration)" \
       "$(read_setting "$dir" install_iso)"
   done
@@ -263,13 +367,16 @@ cmd_show() {
   (($# == 1)) || die "show requires exactly one VM name"
   local dir
   dir="$(require_vm "$1")"
-  local disk="$dir/disk.raw"
+  local disk
+  disk="$(vm_disk_path "$dir")"
   echo "name: $(basename "$dir")"
   echo "directory: $dir"
+  echo "backend: $(read_setting_default "$dir" backend aero)"
   echo "RAM MiB: $(read_setting "$dir" ram_mib)"
   echo "vCPUs: $(read_setting "$dir" cpus)"
   echo "acceleration: $(read_setting "$dir" acceleration)"
   echo "configured disk size: $(read_setting "$dir" disk_size)"
+  echo "disk format: $(read_setting_default "$dir" disk_format raw)"
   echo "disk: $disk"
   if [[ -f "$disk" ]]; then
     echo "disk bytes: $(stat -f '%z' "$disk" 2>/dev/null || stat -c '%s' "$disk")"
@@ -297,8 +404,16 @@ cmd_set() {
       --cpus)
         (($# >= 2)) || die "--cpus requires a count"
         validate_cpus "$2"
-        ((10#$2 == 1)) || warn "SMP is incomplete; Windows boot testing should use one vCPU"
         write_setting "$dir" cpus "$2"
+        shift 2
+        ;;
+      --backend)
+        (($# >= 2)) || die "--backend requires qemu or aero"
+        validate_backend "$2"
+        if [[ "$2" == aero && "$(read_setting_default "$dir" disk_format raw)" != raw ]]; then
+          die "the Aero backend currently requires a raw disk"
+        fi
+        write_setting "$dir" backend "$2"
         shift 2
         ;;
       --iso)
@@ -320,6 +435,32 @@ cmd_set() {
     esac
   done
   cmd_show "$name"
+}
+
+cmd_resize() {
+  (($# == 3)) || die "resize usage: resize NAME --disk-size SIZE"
+  local name="$1"
+  [[ "$2" == --disk-size ]] || die "resize accepts only --disk-size"
+  local requested="$3"
+  validate_disk_size "$requested"
+  local dir
+  dir="$(require_vm "$name")"
+  local current
+  current="$(read_setting "$dir" disk_size)"
+  local requested_bytes current_bytes
+  requested_bytes="$(size_to_bytes "$requested")"
+  current_bytes="$(size_to_bytes "$current")"
+  ((requested_bytes > current_bytes)) ||
+    die "disk resize must grow the disk (current: $current, requested: $requested)"
+  command -v qemu-img >/dev/null 2>&1 || die "qemu-img is required to resize disks"
+  local format disk
+  format="$(read_setting_default "$dir" disk_format raw)"
+  disk="$(vm_disk_path "$dir")"
+  [[ -f "$disk" ]] || die "VM disk is missing: $disk"
+  qemu-img resize -f "$format" "$disk" "$requested"
+  write_setting "$dir" disk_size "$(printf '%s' "$requested" | tr '[:lower:]' '[:upper:]')"
+  echo "resized '$name' disk from $current to $requested"
+  echo "note: grow the Windows partition inside the guest to use the new space"
 }
 
 cmd_start() {
@@ -368,25 +509,66 @@ cmd_start() {
     esac
   done
 
-  local ram cpus acceleration iso disk
+  local ram cpus backend acceleration iso disk disk_format
   ram="$(read_setting "$dir" ram_mib)"
   cpus="$(read_setting "$dir" cpus)"
+  backend="$(read_setting_default "$dir" backend aero)"
   acceleration="$(read_setting "$dir" acceleration)"
   iso="$(read_setting "$dir" install_iso)"
-  disk="$dir/disk.raw"
+  disk_format="$(read_setting_default "$dir" disk_format raw)"
+  disk="$(vm_disk_path "$dir")"
   [[ -f "$disk" ]] || die "VM disk is missing: $disk"
   validate_ram "$ram"
   validate_cpus "$cpus"
+  validate_backend "$backend"
   validate_acceleration "$acceleration"
-  ((10#$cpus == 1)) || warn "this VM uses incomplete SMP; use 'set $name --cpus 1' for boot work"
+  if [[ "$backend" == aero ]] && ((10#$cpus != 1)); then
+    warn "the Aero backend uses incomplete SMP; switch to QEMU or use one vCPU"
+  fi
   if ((install)); then
     [[ -n "$iso" && -f "$iso" ]] || die "--install requires an attached ISO"
   fi
 
-  warn "Windows 7 reaches its file-loading screen, but a complete install is not validated"
-
   local -a command
-  if ((headless)); then
+  if [[ "$backend" == qemu ]]; then
+    local binary
+    binary="$(find_qemu_binary)"
+    command=(
+      "$binary"
+      -name "$name"
+      -machine q35
+      -accel tcg,thread=multi
+      -cpu Nehalem
+      -smp "$cpus"
+      -m "$ram"
+      -drive "file=$disk,if=ide,format=$disk_format,cache=writeback"
+      -vga std
+      -device e1000,netdev=net0
+      -netdev user,id=net0
+    )
+    if [[ "$acceleration" == on ]]; then
+      command+=(-device aerogpu)
+      warn "the QEMU AeroGPU device currently enumerates but does not execute GPU commands yet"
+    fi
+    if ((install)); then
+      command+=(-cdrom "$iso" -boot order=d,menu=on)
+    else
+      command+=(-boot order=c,menu=on)
+    fi
+    if ((headless)); then
+      command+=(-display none -serial stdio)
+    else
+      [[ "$(uname -s)" == Darwin ]] || die "the Cocoa display requires macOS"
+      command+=(-display cocoa)
+    fi
+    if [[ -n "$max_ms" ]]; then
+      warn "--max-ms is not implemented for the QEMU backend and will be ignored"
+    fi
+    if ((trace)); then
+      command+=(-d guest_errors,unimp)
+    fi
+  elif ((headless)); then
+    warn "Windows 7 reaches its file-loading screen, but a complete Aero-backend install is not validated"
     local binary
     binary="$(find_binary "${AERO_MACHINE_BIN:-}" \
       "$REPO_ROOT/target/release/aero-machine" \
@@ -402,6 +584,7 @@ cmd_start() {
       command+=(--debugcon-out stdout)
     fi
   else
+    warn "Windows 7 reaches its file-loading screen, but a complete Aero-backend install is not validated"
     [[ "$(uname -s)" == Darwin ]] || die "the native Metal frontend requires macOS"
     local binary
     binary="$(find_binary "${AERO_MACOS_BIN:-}" \
@@ -434,15 +617,141 @@ cmd_doctor() {
   echo "VM root: $VM_ROOT"
   echo "host: $(uname -s) $(uname -m)"
   if [[ "$(uname -s)" != Darwin ]]; then
-    warn "native Metal VM execution requires macOS"
+    warn "the supported native host is macOS"
     return 1
   fi
-  local binary
-  binary="$(find_binary "${AERO_MACOS_BIN:-}" \
-    "$REPO_ROOT/target/release/aero-macos" \
-    "$REPO_ROOT/target/debug/aero-macos")"
-  echo "frontend: $binary"
-  "$binary" --list-gpu
+  echo
+  echo "QEMU integration:"
+  if bash "$REPO_ROOT/scripts/build-qemu-aerogpu.sh" status; then
+    :
+  else
+    warn "build it with: bash scripts/build-qemu-aerogpu.sh build"
+  fi
+  echo
+  echo "Aero frontend:"
+  local release="$REPO_ROOT/target/release/aero-macos"
+  local debug="$REPO_ROOT/target/debug/aero-macos"
+  if [[ -n "${AERO_MACOS_BIN:-}" && -x "$AERO_MACOS_BIN" ]]; then
+    echo "frontend: $AERO_MACOS_BIN"
+    "$AERO_MACOS_BIN" --list-gpu
+  elif [[ -x "$release" ]]; then
+    echo "frontend: $release"
+    "$release" --list-gpu
+  elif [[ -x "$debug" ]]; then
+    echo "frontend: $debug"
+    "$debug" --list-gpu
+  else
+    echo "frontend: not built (optional when using QEMU)"
+  fi
+}
+
+prompt_default() {
+  local prompt="$1"
+  local default="$2"
+  local answer
+  if [[ -n "$default" ]]; then
+    printf '%s [%s]: ' "$prompt" "$default" >&2
+  else
+    printf '%s: ' "$prompt" >&2
+  fi
+  IFS= read -r answer || return 1
+  printf '%s\n' "${answer:-$default}"
+}
+
+menu_create() {
+  local name backend ram cpus disk_size disk_format iso
+  name="$(prompt_default "VM name" "")" || return
+  backend="$(prompt_default "Backend (qemu/aero)" qemu)" || return
+  ram="$(prompt_default "RAM in MiB" 4096)" || return
+  cpus="$(prompt_default "vCPU count" 2)" || return
+  disk_size="$(prompt_default "Disk size (for example 40G)" 40G)" || return
+  if [[ "$backend" == qemu ]]; then
+    disk_format="$(prompt_default "Disk format (qcow2/raw)" qcow2)" || return
+  else
+    disk_format=raw
+  fi
+  iso="$(prompt_default "Windows ISO path (blank to attach later)" "")" || return
+  local -a args=(
+    "$name" --backend "$backend" --ram "$ram" --cpus "$cpus"
+    --disk-size "$disk_size" --disk-format "$disk_format"
+  )
+  [[ -z "$iso" ]] || args+=(--iso "$iso")
+  cmd_create "${args[@]}"
+}
+
+menu_start() {
+  local install="$1"
+  local name
+  name="$(prompt_default "VM name" "")" || return
+  if [[ "$install" == 1 ]]; then
+    cmd_start "$name" --install
+  else
+    cmd_start "$name"
+  fi
+}
+
+menu_settings() {
+  local name dir value
+  name="$(prompt_default "VM name" "")" || return
+  dir="$(require_vm "$name")"
+  echo "Press Enter to keep the current value."
+  value="$(prompt_default "Backend" "$(read_setting_default "$dir" backend aero)")" || return
+  [[ -z "$value" ]] || cmd_set "$name" --backend "$value" >/dev/null
+  value="$(prompt_default "RAM MiB" "$(read_setting "$dir" ram_mib)")" || return
+  [[ -z "$value" ]] || cmd_set "$name" --ram "$value" >/dev/null
+  value="$(prompt_default "vCPUs" "$(read_setting "$dir" cpus)")" || return
+  [[ -z "$value" ]] || cmd_set "$name" --cpus "$value" >/dev/null
+  value="$(prompt_default "AeroGPU (on/off)" "$(read_setting "$dir" acceleration)")" || return
+  [[ -z "$value" ]] || cmd_set "$name" --acceleration "$value" >/dev/null
+  value="$(prompt_default "ISO path, 'none' to detach" "$(read_setting "$dir" install_iso)")" || return
+  [[ -z "$value" ]] || cmd_set "$name" --iso "$value" >/dev/null
+  cmd_show "$name"
+}
+
+cmd_menu() {
+  (($# == 0)) || die "menu accepts no arguments"
+  while true; do
+    echo
+    echo "Aero VM Manager"
+    echo "  1) List VMs"
+    echo "  2) Create VM"
+    echo "  3) Start VM"
+    echo "  4) Start Windows installer"
+    echo "  5) Change VM settings"
+    echo "  6) Grow VM disk"
+    echo "  7) Show VM details"
+    echo "  8) Check host / QEMU"
+    echo "  9) Build AeroGPU QEMU"
+    echo "  t) Move VM to recoverable trash"
+    echo "  q) Quit"
+    local choice name size
+    printf "Choice: " >&2
+    IFS= read -r choice || return 0
+    case "$choice" in
+      1) cmd_list ;;
+      2) menu_create ;;
+      3) menu_start 0 ;;
+      4) menu_start 1 ;;
+      5) menu_settings ;;
+      6)
+        name="$(prompt_default "VM name" "")" || continue
+        size="$(prompt_default "New disk size" "")" || continue
+        cmd_resize "$name" --disk-size "$size"
+        ;;
+      7)
+        name="$(prompt_default "VM name" "")" || continue
+        cmd_show "$name"
+        ;;
+      8) cmd_doctor || true ;;
+      9) bash "$REPO_ROOT/scripts/build-qemu-aerogpu.sh" build ;;
+      t | T)
+        name="$(prompt_default "VM name" "")" || continue
+        cmd_trash "$name"
+        ;;
+      q | Q) return 0 ;;
+      *) warn "choose one of the displayed options" ;;
+    esac
+  done
 }
 
 cmd_trash() {
@@ -485,8 +794,10 @@ main() {
     list) cmd_list "$@" ;;
     show) cmd_show "$@" ;;
     set) cmd_set "$@" ;;
+    resize) cmd_resize "$@" ;;
     start) cmd_start "$@" ;;
     doctor) cmd_doctor "$@" ;;
+    menu) cmd_menu "$@" ;;
     trash) cmd_trash "$@" ;;
     help | --help | -h) usage ;;
     *) die "unknown command: $command (try --help)" ;;
