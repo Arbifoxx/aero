@@ -24,13 +24,8 @@ on:
       - "drivers/windows7/virtio-snd/aero_virtio_snd.vcxproj"
       - "drivers/windows7/virtio-snd/inf/aero_virtio_snd.inf"
       - "drivers/windows7/virtio-snd/inf/virtio-snd.inf.disabled"
-    paths-ignore:
-      - "docs/**"
-      # Do not ignore Guest Tools markdown: `guest-tools/THIRD_PARTY_NOTICES.md`
-      # is shipped inside the packaged ISO/zip and should rebuild artifacts.
-      - "drivers/**/*.md"
-      - "ci/**/*.md"
-      - ".github/**/*.md"
+      - "!drivers/**/*.md"
+      - "!ci/**/*.md"
   push:
     branches:
       - main
@@ -56,14 +51,12 @@ on:
       - "drivers/windows7/virtio-snd/aero_virtio_snd.vcxproj"
       - "drivers/windows7/virtio-snd/inf/aero_virtio_snd.inf"
       - "drivers/windows7/virtio-snd/inf/virtio-snd.inf.disabled"
-    paths-ignore:
-      - "docs/**"
-      # Do not ignore Guest Tools markdown: `guest-tools/THIRD_PARTY_NOTICES.md`
-      # is shipped inside the packaged ISO/zip and should rebuild artifacts.
-      - "drivers/**/*.md"
-      - "ci/**/*.md"
-      - ".github/**/*.md"
+      - "!drivers/**/*.md"
+      - "!ci/**/*.md"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   virtio-snd-vcxproj-guardrail:
