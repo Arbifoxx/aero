@@ -100,6 +100,8 @@ pub const CR0_PE: u64 = 1 << 0;
 pub const CR0_MP: u64 = 1 << 1;
 pub const CR0_EM: u64 = 1 << 2;
 pub const CR0_TS: u64 = 1 << 3;
+/// Extension Type. Hard-wired to 1 on the modern x86 CPUs represented by Aero.
+pub const CR0_ET: u64 = 1 << 4;
 pub const CR0_NE: u64 = 1 << 5;
 pub const CR0_PG: u64 = 1 << 31;
 
@@ -645,13 +647,25 @@ pub struct DescriptorTables {
 
 /// Control register subset needed for Windows 7 boot and paging.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct ControlRegs {
     pub cr0: u64,
     pub cr2: u64,
     pub cr3: u64,
     pub cr4: u64,
     pub cr8: u64,
+}
+
+impl Default for ControlRegs {
+    fn default() -> Self {
+        Self {
+            cr0: CR0_ET,
+            cr2: 0,
+            cr3: 0,
+            cr4: 0,
+            cr8: 0,
+        }
+    }
 }
 
 /// Debug registers needed for guest probing (hardware breakpoints).

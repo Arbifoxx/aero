@@ -34,6 +34,8 @@ pub const CR0_EM: u64 = 1 << 2;
 #[cfg(feature = "legacy-interp")]
 pub const CR0_TS: u64 = 1 << 3;
 #[cfg(feature = "legacy-interp")]
+pub const CR0_ET: u64 = 1 << 4;
+#[cfg(feature = "legacy-interp")]
 pub const CR0_NE: u64 = 1 << 5;
 
 #[cfg(feature = "legacy-interp")]
@@ -229,7 +231,7 @@ impl Cpu {
             es: 0,
             fs: 0,
             gs: 0,
-            cr0: 0,
+            cr0: CR0_ET,
             cr2: 0,
             cr3: 0,
             cr4: 0,
@@ -449,7 +451,7 @@ impl Cpu {
     pub fn mov_to_cr(&mut self, cr: u8, val: u64) -> Result<(), Exception> {
         self.require_cpl0()?;
         match cr {
-            0 => self.cr0 = val,
+            0 => self.cr0 = val | CR0_ET,
             2 => self.cr2 = val,
             3 => self.cr3 = val,
             4 => self.cr4 = val,
@@ -623,7 +625,7 @@ impl Cpu {
         self.require_cpl0()?;
         // LMSW updates CR0 bits 0-3 from val (PE, MP, EM, TS).
         let mask: u64 = 0b1111;
-        self.cr0 = (self.cr0 & !mask) | (val as u64 & mask);
+        self.cr0 = ((self.cr0 & !mask) | (val as u64 & mask)) | CR0_ET;
         Ok(())
     }
 

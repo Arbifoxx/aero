@@ -3,7 +3,7 @@ use aero_cpu_core::cpuid::{cpuid, CpuFeatures};
 use aero_cpu_core::interp::tier0::exec::{step, StepExit};
 use aero_cpu_core::mem::{CpuBus, FlatTestBus};
 use aero_cpu_core::msr;
-use aero_cpu_core::state::{CpuMode, CpuState, CR0_PE, RFLAGS_IF, RFLAGS_RESERVED1};
+use aero_cpu_core::state::{CpuMode, CpuState, CR0_ET, CR0_PE, RFLAGS_IF, RFLAGS_RESERVED1};
 use aero_cpu_core::time::TimeSource;
 use aero_cpu_core::{AssistReason, Exception};
 use aero_x86::Register;
@@ -700,4 +700,29 @@ fn real_mode_treats_privileged_checks_as_cpl0() {
     let exit = step(&mut state, &mut bus).expect("step");
     assert_eq!(exit, StepExit::Halted);
     assert!(state.halted);
+}
+
+#[test]
+fn cr0_et_is_set_at_reset_and_cannot_be_cleared() {
+    let mut state = CpuState::new(CpuMode::Bit16);
+    assert_eq!(state.control.cr0 & CR0_ET, CR0_ET);
+
+    state.set_cr0(0);
+    assert_eq!(state.control.cr0, CR0_ET);
+
+    let mut bus = FlatTestBus::new(BUS_SIZE);
+    let mut ctx = AssistContext::default();
+    let mut time = TimeSource::default();
+    state.write_reg(Register::EAX, 0);
+    exec_assist(
+        &mut ctx,
+        &mut time,
+        &mut state,
+        &mut bus,
+        CODE_BASE,
+        &[0x0F, 0x22, 0xC0], // mov cr0, eax
+        AssistReason::Privileged,
+    )
+    .unwrap();
+    assert_eq!(state.control.cr0, CR0_ET);
 }

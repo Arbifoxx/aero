@@ -1,6 +1,7 @@
 use crate::segmentation::Seg;
 use crate::state::{
-    CpuMode, CpuState, CR0_PE, CR0_PG, CR4_PAE, EFER_LMA, EFER_LME, SEG_ACCESS_DB, SEG_ACCESS_L,
+    CpuMode, CpuState, CR0_ET, CR0_PE, CR0_PG, CR4_PAE, EFER_LMA, EFER_LME, SEG_ACCESS_DB,
+    SEG_ACCESS_L,
 };
 
 /// Instruction decoding/execution width derived from CS and [`CpuMode`].
@@ -37,7 +38,9 @@ impl CpuState {
     }
 
     pub fn set_cr0(&mut self, value: u64) {
-        self.control.cr0 = value;
+        // Intel 486 and newer processors hard-wire CR0.ET to 1. Aero advertises a much newer
+        // family/model, so guest writes cannot clear it.
+        self.control.cr0 = value | CR0_ET;
         self.recompute_lma();
         self.update_mode();
     }

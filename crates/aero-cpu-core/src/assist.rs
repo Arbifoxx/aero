@@ -913,7 +913,7 @@ fn instr_mov_cr_dr(state: &mut CpuState, instr: &Instruction) -> Result<(), Exce
         // mov crX, reg
         let val = state.read_reg(src);
         match dst {
-            Register::CR0 => state.control.cr0 = val,
+            Register::CR0 => state.set_cr0(val),
             Register::CR2 => state.control.cr2 = val,
             Register::CR3 => state.control.cr3 = val,
             Register::CR4 => state.control.cr4 = val,
@@ -1235,8 +1235,7 @@ fn instr_lmsw_smsw<B: CpuBus>(
             if (old & crate::state::CR0_PE) != 0 {
                 next |= crate::state::CR0_PE;
             }
-            state.control.cr0 = next;
-            state.update_mode();
+            state.set_cr0(next);
             Ok(())
         }
         Mnemonic::Smsw => {
