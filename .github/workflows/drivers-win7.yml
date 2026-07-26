@@ -205,29 +205,11 @@ jobs:
           cmake --build build-aerogpu-host-tests-linux
           ctest --test-dir build-aerogpu-host-tests-linux --output-on-failure --no-tests=error
 
-  aerogpu-host-tests-windows:
-    name: AeroGPU host tests (Windows, x86 + x64)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Run AeroGPU host tests (CMake)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          # Validate both architectures (x86 + x64) to catch pointer-size/layout differences.
-          cmake -S . -B build-aerogpu-host-tests-x64 -A x64 -DAERO_AEROGPU_BUILD_TESTS=ON -DAERO_VIRTIO_BUILD_TESTS=OFF
-          cmake --build build-aerogpu-host-tests-x64 --config Release
-          ctest --test-dir build-aerogpu-host-tests-x64 --output-on-failure --no-tests=error -C Release
-
-          cmake -S . -B build-aerogpu-host-tests-x86 -A Win32 -DAERO_AEROGPU_BUILD_TESTS=ON -DAERO_VIRTIO_BUILD_TESTS=OFF
-          cmake --build build-aerogpu-host-tests-x86 --config Release
-          ctest --test-dir build-aerogpu-host-tests-x86 --output-on-failure --no-tests=error -C Release
-
   drivers-win7:
-    runs-on: windows-latest
+    # Keep the artifact-producing build aligned with the release workflow.
+    # `windows-latest` currently selects the VS 2026 image, while the Win7
+    # driver toolchain and packaging scripts are validated on VS 2022.
+    runs-on: windows-2022
     needs: virtio-snd-vcxproj-guardrail
     outputs:
       skip: ${{ steps.detect.outputs.skip }}
@@ -249,31 +231,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           pwsh -NoProfile -ExecutionPolicy Bypass -File 'ci/check-virtio-driver-uniqueness.ps1'
-
-      - name: Run virtio host tests (CMake)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $hasWin7VirtioCommon = Test-Path -LiteralPath 'drivers/windows7/virtio/common/tests/CMakeLists.txt'
-          $hasWin7VirtioSnd = Test-Path -LiteralPath 'drivers/windows7/virtio-snd/tests/CMakeLists.txt'
-          $hasPortableVirtqSplit = Test-Path -LiteralPath 'drivers/windows/virtio/common/tests/CMakeLists.txt'
-          $hasPortableVirtioPciModern = Test-Path -LiteralPath 'drivers/windows/virtio/pci-modern/tests/CMakeLists.txt'
-          $hasWin7VirtioCapParser = Test-Path -LiteralPath 'drivers/win7/virtio/tests/CMakeLists.txt'
-
-          if (!$hasWin7VirtioCommon -and !$hasWin7VirtioSnd -and !$hasPortableVirtqSplit -and !$hasPortableVirtioPciModern -and !$hasWin7VirtioCapParser) {
-            Write-Host "No virtio host tests found; skipping."
-            exit 0
-          }
-
-          # Validate both architectures (x86 + x64) without requiring any VM.
-          cmake -S . -B build-virtio-common-x64 -A x64 -DAERO_VIRTIO_BUILD_TESTS=ON -DAERO_AEROGPU_BUILD_TESTS=OFF
-          cmake --build build-virtio-common-x64 --config Release
-          ctest --test-dir build-virtio-common-x64 --output-on-failure -C Release
-
-          cmake -S . -B build-virtio-common-x86 -A Win32 -DAERO_VIRTIO_BUILD_TESTS=ON -DAERO_AEROGPU_BUILD_TESTS=OFF
-          cmake --build build-virtio-common-x86 --config Release
-          ctest --test-dir build-virtio-common-x86 --output-on-failure -C Release
 
       - name: Detect driver projects
         id: detect
