@@ -14,6 +14,7 @@ mod native {
     use std::fs::File;
     use std::io::{self, BufWriter, Write};
     use std::path::{Path, PathBuf};
+    use std::str::FromStr;
     use std::time::{Duration, Instant};
 
     use aero_machine::{BootDevice, Machine, MachineConfig, RunExit};
@@ -64,6 +65,10 @@ mod native {
         #[arg(long, default_value_t = 64)]
         ram: u64,
 
+        /// Number of guest vCPUs. Keep this at 1 for Windows boots; SMP is still experimental.
+        #[arg(long, default_value_t = 1)]
+        cpus: u8,
+
         /// Stop after executing at most N guest instructions.
         #[arg(long)]
         max_insts: Option<u64>,
@@ -111,6 +116,153 @@ mod native {
         /// CPU state is restored from the snapshot and the VM is not reset.
         #[arg(long, value_enum)]
         boot: Option<BootMode>,
+
+        /// Print guest physical memory on exit (`ADDRESS:LENGTH`; decimal or `0x` hex).
+        ///
+        /// May be repeated. Each range is capped at 1 MiB.
+        #[arg(long, value_name = "ADDRESS:LENGTH")]
+        inspect_phys: Vec<PhysicalRange>,
+
+        /// Dump guest physical memory on exit (`ADDRESS:LENGTH:PATH`; decimal or `0x` hex).
+        ///
+        /// May be repeated. Dumps are local debugging artifacts and must not be committed when
+        /// they contain proprietary guest bytes. Each dump is capped at 256 MiB.
+        #[arg(long, value_name = "ADDRESS:LENGTH:PATH")]
+        dump_phys: Vec<PhysicalDump>,
+
+        /// Record writes overlapping guest physical memory (`ADDRESS:LENGTH`).
+        ///
+        /// The watched range is capped at 4 KiB. Events report the instruction-count interval in
+        /// which the write occurred, plus previous and current bytes.
+        #[arg(long, value_name = "ADDRESS:LENGTH")]
+        watch_phys: Option<PhysicalRange>,
+
+        /// Begin using `--watch-granularity-insts` after this many instructions.
+        #[arg(long, default_value_t = 0, requires = "watch_phys")]
+        watch_after_insts: u64,
+
+        /// Runner slice size after `--watch-after-insts`.
+        ///
+        /// Use 1 to identify the instruction immediately responsible for a watched write.
+        #[arg(long, default_value_t = SLICE_INST_BUDGET, requires = "watch_phys")]
+        watch_granularity_insts: u64,
+
+        /// Stop immediately after the first slice that records a watched write.
+        #[arg(long, requires = "watch_phys")]
+        watch_stop: bool,
+
+        /// Debug-only guest mutation (`INSTRUCTIONS:ADDRESS:VALUE`, decimal or `0x` hex).
+        ///
+        /// Writes a little-endian u32 after exactly the requested number of retired instructions.
+        /// This alters guest behavior and must never be mistaken for an emulator fix.
+        #[arg(long, value_name = "INSTRUCTIONS:ADDRESS:VALUE")]
+        patch_phys_u32_at: Option<PhysicalU32Patch>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct PhysicalRange {
+        address: u64,
+        length: usize,
+    }
+
+    impl FromStr for PhysicalRange {
+        type Err = String;
+
+        fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+            let (address, length) = value
+                .split_once(':')
+                .ok_or_else(|| "expected ADDRESS:LENGTH".to_owned())?;
+            let address = parse_integer(address)?;
+            let length_u64 = parse_integer(length)?;
+            let length = usize::try_from(length_u64)
+                .map_err(|_| format!("length does not fit this host: {length}"))?;
+            if length == 0 {
+                return Err("length must be greater than zero".to_owned());
+            }
+            address
+                .checked_add(length_u64)
+                .ok_or_else(|| "physical range overflows u64".to_owned())?;
+            Ok(Self { address, length })
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct PhysicalDump {
+        range: PhysicalRange,
+        path: PathBuf,
+    }
+
+    #[derive(Debug, Clone)]
+    struct PhysicalU32Patch {
+        instructions: u64,
+        address: u64,
+        value: u32,
+    }
+
+    impl FromStr for PhysicalU32Patch {
+        type Err = String;
+
+        fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+            let mut fields = value.split(':');
+            let instructions = parse_integer(fields.next().unwrap_or_default())?;
+            let address = parse_integer(
+                fields
+                    .next()
+                    .ok_or_else(|| "expected INSTRUCTIONS:ADDRESS:VALUE".to_owned())?,
+            )?;
+            let raw_value = parse_integer(
+                fields
+                    .next()
+                    .ok_or_else(|| "expected INSTRUCTIONS:ADDRESS:VALUE".to_owned())?,
+            )?;
+            if fields.next().is_some() {
+                return Err("expected INSTRUCTIONS:ADDRESS:VALUE".to_owned());
+            }
+            address
+                .checked_add(4)
+                .ok_or_else(|| "physical patch range overflows u64".to_owned())?;
+            let value = u32::try_from(raw_value)
+                .map_err(|_| format!("patch value does not fit u32: {raw_value:#x}"))?;
+            Ok(Self {
+                instructions,
+                address,
+                value,
+            })
+        }
+    }
+
+    impl FromStr for PhysicalDump {
+        type Err = String;
+
+        fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+            let mut fields = value.splitn(3, ':');
+            let address = fields.next().unwrap_or_default();
+            let length = fields
+                .next()
+                .ok_or_else(|| "expected ADDRESS:LENGTH:PATH".to_owned())?;
+            let path = fields
+                .next()
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| "expected ADDRESS:LENGTH:PATH".to_owned())?;
+            let range = format!("{address}:{length}").parse()?;
+            Ok(Self {
+                range,
+                path: PathBuf::from(path),
+            })
+        }
+    }
+
+    fn parse_integer(value: &str) -> std::result::Result<u64, String> {
+        let value = value.trim();
+        let parsed = if let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
+            u64::from_str_radix(hex, 16)
+        } else {
+            value.parse()
+        };
+        parsed.map_err(|err| format!("invalid integer {value:?}: {err}"))
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -163,8 +315,38 @@ mod native {
         }
 
         // Use the canonical PC platform defaults so the CLI is useful for full-system boot images.
-        let mut machine = Machine::new(MachineConfig::win7_storage_defaults(ram_bytes))
-            .map_err(|e| anyhow!("{e}"))?;
+        if args.cpus == 0 {
+            bail!("--cpus must be at least 1");
+        }
+        if args.cpus > 1 {
+            eprintln!(
+                "warning: SMP is experimental; use --cpus 1 for Windows 7 boot compatibility"
+            );
+        }
+        let mut cfg = MachineConfig::win7_storage_defaults(ram_bytes);
+        cfg.cpu_count = args.cpus;
+        let mut machine = Machine::new(cfg).map_err(|e| anyhow!("{e}"))?;
+        if let Some(watch) = &args.watch_phys {
+            const MAX_WATCH_BYTES: usize = 4096;
+            if watch.length > MAX_WATCH_BYTES {
+                bail!(
+                    "refusing to watch {} bytes at {:#x}; maximum is {} bytes",
+                    watch.length,
+                    watch.address,
+                    MAX_WATCH_BYTES
+                );
+            }
+            if !machine.set_physical_write_watchpoint(watch.address, watch.length) {
+                bail!(
+                    "invalid physical write watch range at {:#x} with length {}",
+                    watch.address,
+                    watch.length
+                );
+            }
+            if args.watch_granularity_insts == 0 {
+                bail!("--watch-granularity-insts must be greater than zero");
+            }
+        }
 
         // Record the host's chosen disk paths in the machine's snapshot overlay refs so snapshots
         // produced by this CLI remain self-describing (even when no explicit COW overlay is used).
@@ -352,14 +534,40 @@ mod native {
 
         let start = Instant::now();
         let mut total_executed: u64 = 0;
+        let mut watch_event_count: u64 = 0;
+        let mut dropped_watch_event_count: u64 = 0;
+        let mut physical_patch_applied = false;
         let mut run_error: Option<anyhow::Error> = None;
+        report_physical_writes(
+            &mut machine,
+            0,
+            0,
+            &mut watch_event_count,
+            &mut dropped_watch_event_count,
+        );
 
         loop {
+            if let Some(patch) = &args.patch_phys_u32_at {
+                if !physical_patch_applied && total_executed == patch.instructions {
+                    machine.write_physical_u32(patch.address, patch.value);
+                    physical_patch_applied = true;
+                    eprintln!(
+                        "debug physical patch applied: instructions={} paddr={:#x} value={:#010x}",
+                        total_executed, patch.address, patch.value
+                    );
+                }
+            }
+            let interval_start = total_executed;
             let exit = if let Some(max_insts) = args.max_insts {
                 if total_executed >= max_insts {
                     break;
                 }
-                let budget = (max_insts - total_executed).min(SLICE_INST_BUDGET);
+                let budget = debug_slice_budget(
+                    &args,
+                    total_executed,
+                    max_insts - total_executed,
+                    physical_patch_applied,
+                );
                 machine.run_slice(budget)
             } else {
                 let max_ms = args
@@ -368,10 +576,30 @@ mod native {
                 if start.elapsed() >= Duration::from_millis(max_ms) {
                     break;
                 }
-                machine.run_slice(SLICE_INST_BUDGET)
+                let budget = debug_slice_budget(
+                    &args,
+                    total_executed,
+                    SLICE_INST_BUDGET,
+                    physical_patch_applied,
+                );
+                machine.run_slice(budget)
             };
 
             total_executed = total_executed.saturating_add(exit.executed());
+            let previous_watch_event_count = watch_event_count;
+            report_physical_writes(
+                &mut machine,
+                interval_start,
+                total_executed,
+                &mut watch_event_count,
+                &mut dropped_watch_event_count,
+            );
+            if args.watch_stop && watch_event_count != previous_watch_event_count {
+                eprintln!(
+                    "physical write watch requested stop after {total_executed} instructions"
+                );
+                break;
+            }
             stream_serial(&mut machine, &mut serial_sink)?;
             if let Some(out) = debugcon_sink.as_mut() {
                 stream_debugcon(&mut machine, out)?;
@@ -388,13 +616,22 @@ mod native {
         }
 
         eprintln!(
-            "run summary: instructions={} elapsed_ms={} configured_boot={:?} active_boot={:?} {}",
+            "run summary: instructions={} elapsed_ms={} cpus={} configured_boot={:?} active_boot={:?} {}",
             total_executed,
             start.elapsed().as_millis(),
+            machine.cpu_count(),
             machine.boot_device(),
             machine.active_boot_device(),
             cpu_diagnostic(&mut machine)
         );
+        inspect_physical_ranges(&mut machine, &args.inspect_phys)?;
+        dump_physical_ranges(&mut machine, &args.dump_phys)?;
+        if args.watch_phys.is_some() {
+            eprintln!(
+                "physical write watch summary: events={} dropped={}",
+                watch_event_count, dropped_watch_event_count
+            );
+        }
 
         // Flush any remaining serial bytes.
         stream_serial(&mut machine, &mut serial_sink)?;
@@ -551,6 +788,121 @@ mod native {
         Ok(())
     }
 
+    fn inspect_physical_ranges(machine: &mut Machine, ranges: &[PhysicalRange]) -> Result<()> {
+        const MAX_INSPECT_BYTES: usize = 1024 * 1024;
+        for range in ranges {
+            if range.length > MAX_INSPECT_BYTES {
+                bail!(
+                    "refusing to inspect {} bytes at {:#x}; maximum is {} bytes",
+                    range.length,
+                    range.address,
+                    MAX_INSPECT_BYTES
+                );
+            }
+            let bytes = machine.read_physical_bytes(range.address, range.length);
+            let formatted = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!(
+                "physical memory [{:#x}..{:#x}) = [{}]",
+                range.address,
+                range.address + range.length as u64,
+                formatted
+            );
+        }
+        Ok(())
+    }
+
+    fn dump_physical_ranges(machine: &mut Machine, dumps: &[PhysicalDump]) -> Result<()> {
+        const MAX_DUMP_BYTES: usize = 256 * 1024 * 1024;
+        for dump in dumps {
+            if dump.range.length > MAX_DUMP_BYTES {
+                bail!(
+                    "refusing to dump {} bytes at {:#x}; maximum is {} bytes",
+                    dump.range.length,
+                    dump.range.address,
+                    MAX_DUMP_BYTES
+                );
+            }
+            let bytes = machine.read_physical_bytes(dump.range.address, dump.range.length);
+            let mut file = File::create(&dump.path).with_context(|| {
+                format!(
+                    "failed to create physical memory dump {}",
+                    dump.path.display()
+                )
+            })?;
+            file.write_all(&bytes).with_context(|| {
+                format!(
+                    "failed to write physical memory dump {}",
+                    dump.path.display()
+                )
+            })?;
+            eprintln!(
+                "dumped physical memory [{:#x}..{:#x}) to {}",
+                dump.range.address,
+                dump.range.address + dump.range.length as u64,
+                dump.path.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn report_physical_writes(
+        machine: &mut Machine,
+        interval_start: u64,
+        interval_end: u64,
+        event_count: &mut u64,
+        dropped_event_count: &mut u64,
+    ) {
+        for event in machine.take_physical_write_events() {
+            *event_count = event_count.saturating_add(1);
+            eprintln!(
+                "physical write event: instructions=({interval_start},{interval_end}] paddr={:#x} previous=[{}] current=[{}]",
+                event.paddr,
+                format_bytes(&event.previous),
+                format_bytes(&event.current)
+            );
+        }
+        let dropped = machine.take_dropped_physical_write_event_count();
+        if dropped != 0 {
+            *dropped_event_count = dropped_event_count.saturating_add(dropped);
+            eprintln!(
+                "warning: dropped {dropped} physical write events in instruction interval ({interval_start},{interval_end}]"
+            );
+        }
+    }
+
+    fn format_bytes(bytes: &[u8]) -> String {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn debug_slice_budget(
+        args: &Args,
+        total_executed: u64,
+        default_budget: u64,
+        physical_patch_applied: bool,
+    ) -> u64 {
+        let mut budget = default_budget;
+        if let Some(patch) = &args.patch_phys_u32_at {
+            if !physical_patch_applied && total_executed < patch.instructions {
+                budget = budget.min(patch.instructions - total_executed);
+            }
+        }
+        if args.watch_phys.is_none() {
+            return budget;
+        }
+        if total_executed < args.watch_after_insts {
+            return budget.min(args.watch_after_insts - total_executed);
+        }
+        budget.min(args.watch_granularity_insts)
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum LoopControl {
         Continue,
@@ -632,7 +984,11 @@ mod native {
         };
         format!(
             "cpu={{mode={:?} cs={:#06x} cs_base={:#018x} rip={:#018x} linear_ip={:#018x} \
+             ss={:#06x} ss_base={:#018x} ds={:#06x} ds_base={:#018x} \
+             es={:#06x} es_base={:#018x} fs={:#06x} fs_base={:#018x} \
+             gs={:#06x} gs_base={:#018x} \
              rflags={:#018x} cr0={:#018x} cr3={:#018x} cr4={:#018x} efer={:#018x} \
+             gdtr_base={:#018x} gdtr_limit={:#06x} idtr_base={:#018x} idtr_limit={:#06x} \
              rax={:#018x} rbx={:#018x} rcx={:#018x} rdx={:#018x} rsi={:#018x} \
              rdi={:#018x} rbp={:#018x} rsp={:#018x} linear_sp={:#018x} \
              bytes=[{}] stack=[{}]}}",
@@ -641,11 +997,25 @@ mod native {
             state.segments.cs.base,
             state.rip(),
             linear_ip,
+            state.segments.ss.selector,
+            state.segments.ss.base,
+            state.segments.ds.selector,
+            state.segments.ds.base,
+            state.segments.es.selector,
+            state.segments.es.base,
+            state.segments.fs.selector,
+            state.segments.fs.base,
+            state.segments.gs.selector,
+            state.segments.gs.base,
             state.rflags_snapshot(),
             state.control.cr0,
             state.control.cr3,
             state.control.cr4,
             state.msr.efer,
+            state.tables.gdtr.base,
+            state.tables.gdtr.limit,
+            state.tables.idtr.base,
+            state.tables.idtr.limit,
             state.gpr[0],
             state.gpr[3],
             state.gpr[1],
@@ -695,6 +1065,47 @@ mod native {
         img.save(path)
             .with_context(|| format!("failed to write PNG: {}", path.display()))?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{parse_integer, PhysicalDump, PhysicalRange, PhysicalU32Patch};
+
+        #[test]
+        fn physical_range_accepts_decimal_and_hex() {
+            let decimal: PhysicalRange = "4096:16".parse().unwrap();
+            assert_eq!(decimal.address, 4096);
+            assert_eq!(decimal.length, 16);
+
+            let hex: PhysicalRange = "0x495e08:0x10".parse().unwrap();
+            assert_eq!(hex.address, 0x495e08);
+            assert_eq!(hex.length, 16);
+        }
+
+        #[test]
+        fn physical_range_rejects_invalid_or_overflowing_values() {
+            assert!("4096".parse::<PhysicalRange>().is_err());
+            assert!("0x1000:0".parse::<PhysicalRange>().is_err());
+            assert!("0xffffffffffffffff:2".parse::<PhysicalRange>().is_err());
+            assert!(parse_integer("0xnot-hex").is_err());
+        }
+
+        #[test]
+        fn physical_dump_keeps_colons_in_output_path() {
+            let dump: PhysicalDump = "0x1000:32:/tmp/a:b.bin".parse().unwrap();
+            assert_eq!(dump.range.address, 0x1000);
+            assert_eq!(dump.range.length, 32);
+            assert_eq!(dump.path.to_string_lossy(), "/tmp/a:b.bin");
+        }
+
+        #[test]
+        fn physical_u32_patch_parses_and_checks_width() {
+            let patch: PhysicalU32Patch = "20376805:0x495e08:0x252f8".parse().unwrap();
+            assert_eq!(patch.instructions, 20_376_805);
+            assert_eq!(patch.address, 0x495e08);
+            assert_eq!(patch.value, 0x252f8);
+            assert!("1:2:0x100000000".parse::<PhysicalU32Patch>().is_err());
+        }
     }
 }
 
