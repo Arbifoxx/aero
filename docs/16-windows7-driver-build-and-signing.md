@@ -64,7 +64,11 @@ CI intentionally uses a mixed toolchain:
 
 - **Windows Kits 10.0.22621.0** provides the headers, libraries, and build files used to compile the drivers.
 - **Windows Kits 10.0.19041.0 Inf2Cat** provides the legacy `7_X86` and `7_X64` catalog targets.
-- **Visual Studio's Windows Driver Kit component** provides the MSBuild integration required by Visual Studio 2022 17.11 and newer.
+- **Visual Studio's Windows Driver Kit component** provides the
+  `WindowsKernelModeDriver10.0` MSBuild platform toolset required by Visual
+  Studio 2022 17.11 and newer. The provisioner verifies its Win32 and x64
+  `Toolset.props`/`Toolset.targets` files; current WDKs do not require the
+  legacy `BuildCustomizations\Driver.props` and `Driver.targets` imports.
 
 The selection is implemented in `ci/install-wdk.ps1`, using Microsoft-signed standalone kit installers when the runner does not provide `winget`, and verified by `ci/validate-toolchain.ps1`.
 

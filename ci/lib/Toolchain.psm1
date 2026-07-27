@@ -350,7 +350,7 @@ function Resolve-WindowsKitToolchain {
   }
 }
 
-function Get-VsDriverProps {
+function Resolve-VsDriverPlatformToolset {
   [CmdletBinding()]
   param()
 
@@ -364,15 +364,56 @@ function Get-VsDriverProps {
     return $null
   }
 
-  $driverProps =
-    Get-ChildItem -LiteralPath $vcMsBuildRoot -Filter 'Driver.props' -File -Recurse -ErrorAction SilentlyContinue |
-      Where-Object { $_.DirectoryName -like '*\BuildCustomizations' } |
+  # WDK driver projects are selected through PlatformToolset, not through the
+  # optional BuildCustomizations\Driver.props/targets pair. Current Visual
+  # Studio/WDK releases install per-platform Toolset.props/targets files here:
+  #
+  #   ...\Platforms\<arch>\PlatformToolsets\
+  #       WindowsKernelModeDriver10.0\Toolset.{props,targets}
+  #
+  # Search beneath the active VS installation because the v170 path component
+  # and product edition are intentionally version-dependent.
+  $toolsetProps = @(
+    Get-ChildItem -LiteralPath $vcMsBuildRoot -Filter 'Toolset.props' -File -Recurse -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Directory.Name -eq 'WindowsKernelModeDriver10.0' -and
+        $_.Directory.Parent.Name -eq 'PlatformToolsets'
+      }
+  )
+
+  $platforms = @('Win32', 'x64')
+  $entries = @()
+  foreach ($platform in $platforms) {
+    $props = $toolsetProps |
+      Where-Object {
+        $relativePath = $_.FullName.Substring($vcMsBuildRoot.Length).TrimStart('\', '/')
+        $relativePath -match "(?i)(^|[\\/])Platforms[\\/]$([Regex]::Escape($platform))[\\/]PlatformToolsets[\\/]WindowsKernelModeDriver10\.0[\\/]Toolset\.props$"
+      } |
       Select-Object -First 1
-  if ($null -eq $driverProps) {
+    if ($null -eq $props) {
+      return $null
+    }
+
+    $targets = Join-Path $props.DirectoryName 'Toolset.targets'
+    if (-not (Test-Path -LiteralPath $targets)) {
+      return $null
+    }
+
+    $entries += [pscustomobject]@{
+      Platform = $platform
+      Props = (Resolve-ExistingPath -LiteralPath $props.FullName)
+      Targets = (Resolve-ExistingPath -LiteralPath $targets)
+    }
+  }
+
+  if ($entries.Count -ne $platforms.Count) {
     return $null
   }
 
-  return (Resolve-ExistingPath -LiteralPath $driverProps.FullName)
+  return [pscustomobject]@{
+    Name = 'WindowsKernelModeDriver10.0'
+    Platforms = $entries
+  }
 }
 
 function Get-VsInstallerSetupExe {
@@ -418,8 +459,8 @@ function Resolve-WindowsDriverKitBuildSupport {
   }
   $versions = @($versions | Select-Object -Unique)
 
-  $driverProps = Get-VsDriverProps
-  if ([string]::IsNullOrWhiteSpace($driverProps)) {
+  $driverPlatformToolset = Resolve-VsDriverPlatformToolset
+  if ($null -eq $driverPlatformToolset) {
     return $null
   }
 
@@ -463,7 +504,7 @@ function Resolve-WindowsDriverKitBuildSupport {
       KitVersion = $version
       IncludeRoot = (Resolve-ExistingPath -LiteralPath $versionIncludeRoot)
       BuildRoot = (Resolve-ExistingPath -LiteralPath $versionBuildRoot)
-      DriverProps = $driverProps
+      DriverPlatformToolset = $driverPlatformToolset
     }
   }
 
@@ -612,19 +653,20 @@ function Wait-VsDriverKitIntegration {
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   $pollCount = 0
   do {
-    $driverProps = Get-VsDriverProps
-    if (-not [string]::IsNullOrWhiteSpace($driverProps)) {
-      Write-ToolchainLog -Message "Visual Studio WDK integration is ready: $driverProps"
+    $driverPlatformToolset = Resolve-VsDriverPlatformToolset
+    if ($null -ne $driverPlatformToolset) {
+      $platformNames = @($driverPlatformToolset.Platforms | ForEach-Object { $_.Platform }) -join ', '
+      Write-ToolchainLog -Message "Visual Studio WDK platform toolset is ready for: $platformNames"
       return
     }
     if (($pollCount % 6) -eq 0) {
-      Write-ToolchainLog -Level WARN -Message 'Waiting for Visual Studio WDK integration (Driver.props)...'
+      Write-ToolchainLog -Level WARN -Message 'Waiting for the Visual Studio WindowsKernelModeDriver10.0 platform toolset...'
     }
     $pollCount += 1
     Start-Sleep -Seconds 5
   } while ([DateTime]::UtcNow -lt $deadline)
 
-  throw "Timed out waiting for Visual Studio WDK integration (Driver.props) after $TimeoutSeconds seconds."
+  throw "Timed out waiting for the Visual Studio WindowsKernelModeDriver10.0 platform toolset after $TimeoutSeconds seconds."
 }
 
 function Wait-Win7Inf2Cat {
@@ -1126,7 +1168,7 @@ Remediation:
       -RequireSdkTools:$needsSdk
   }
 
-  if ([string]::IsNullOrWhiteSpace((Get-VsDriverProps))) {
+  if ($null -eq (Resolve-VsDriverPlatformToolset)) {
     Write-ToolchainLog -Message 'Installing the Visual Studio Windows Driver Kit component required by VS 2022 17.11 and newer...'
     Install-VsDriverKitComponent
     Wait-VsDriverKitIntegration

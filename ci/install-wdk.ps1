@@ -72,7 +72,9 @@ if ($null -ne $kitToolchain.WindowsKits.StampInf) {
   Write-ToolchainLog -Message "stampinf.exe kit source: $($kitToolchain.WindowsKits.StampInf.KitFamily) $($kitToolchain.WindowsKits.StampInf.KitToolVersion) ($($kitToolchain.WindowsKits.StampInf.KitBinSource)) @ $($kitToolchain.WindowsKits.StampInf.KitBinDir)"
 }
 Write-ToolchainLog -Message "WDK driver build support: $($kitToolchain.WindowsKits.DriverBuild.KitVersion) (headers=$($kitToolchain.WindowsKits.DriverBuild.IncludeRoot), build=$($kitToolchain.WindowsKits.DriverBuild.BuildRoot))"
-Write-ToolchainLog -Message "WDK Visual Studio integration: $($kitToolchain.WindowsKits.DriverBuild.DriverProps)"
+$driverToolset = $kitToolchain.WindowsKits.DriverBuild.DriverPlatformToolset
+$driverToolsetPlatforms = @($driverToolset.Platforms | ForEach-Object { $_.Platform }) -join ', '
+Write-ToolchainLog -Message "WDK Visual Studio integration: $($driverToolset.Name) ($driverToolsetPlatforms)"
 
 # Make the chosen tool versions resolvable by name for the remainder of this session and (on CI) later steps.
 Add-PathEntry -Directory (Split-Path -Path $msbuildExe -Parent)
