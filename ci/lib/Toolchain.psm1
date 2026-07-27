@@ -438,8 +438,6 @@ function Resolve-WindowsDriverKitBuildSupport {
 
     $requiredDdiHeaders = @(
       'd3d10umddi.h',
-      'd3d10_1umddi.h',
-      'd3d11umddi.h',
       'd3dumddi.h',
       'd3dkmthk.h'
     )
@@ -508,7 +506,7 @@ function Get-WindowsKitPayloadState {
       }
     }
 
-    foreach ($header in @('d3d10umddi.h', 'd3d10_1umddi.h', 'd3d11umddi.h', 'd3dumddi.h', 'd3dkmthk.h')) {
+    foreach ($header in @('d3d10umddi.h', 'd3dumddi.h', 'd3dkmthk.h')) {
       $found = $false
       foreach ($includeKind in @('um', 'shared')) {
         if (Test-Path -LiteralPath (Join-Path $versionIncludeRoot (Join-Path $includeKind $header))) {

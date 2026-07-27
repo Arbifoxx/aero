@@ -51,9 +51,11 @@ For the recommended CI-style flow (packages staged under `out/packages/` and sig
 
 ### Win7 DDI header mode (D3D10/11 UMD)
 
-The real Win7 D3D10/11 UMD must be built against the official D3D10/11 user-mode DDI headers
-(`d3d10umddi.h`, `d3d10_1umddi.h`, `d3d11umddi.h`, `d3dumddi.h`) provided by the
-**Windows Driver Kit (WDK)** (Windows Kits).
+The real Win7 D3D10/11 UMD must be built against the official D3D10/11
+user-mode DDI headers provided by the **Windows Driver Kit (WDK)** (Windows
+Kits). Modern WDKs consolidate the D3D10.1 and D3D11 declarations into
+`d3d10umddi.h`; older WDKs may also provide the split `d3d10_1umddi.h` and
+`d3d11umddi.h` headers.
 
 The repo-local `drivers\\aerogpu\\build\\build_all.cmd` wrapper forces the WDK
 header mode for the D3D10/11 UMD build by passing:
@@ -67,13 +69,13 @@ If a WinDDK-style root is detected (Win7-era `inc\\{api,ddk}` layout), it also p
 If no WinDDK-style root is found, the build falls back to the toolchain's
 standard include paths (common for Windows Kits 10+ installs).
 
-On a typical modern WDK install, these headers live under:
+On a typical modern WDK install, the required headers live under:
 
-* `C:\\Program Files (x86)\\Windows Kits\\10\\Include\\<ver>\\um\\d3d11umddi.h`
-* `C:\\Program Files (x86)\\Windows Kits\\10\\Include\\<ver>\\shared\\d3d11umddi.h`
+* `C:\\Program Files (x86)\\Windows Kits\\10\\Include\\<ver>\\um\\d3d10umddi.h`
+* `C:\\Program Files (x86)\\Windows Kits\\10\\Include\\<ver>\\shared\\d3dkmthk.h`
 
-If you hit a build error about missing `d3d11umddi.h`, install the Windows WDK
-(for CI we use the `Microsoft.WindowsWDK` winget package) and rebuild.
+If you hit a build error about missing D3D UMD DDI declarations, install the
+Windows WDK and rebuild.
 
 For a self-contained repo-only build (no WDK UMDDI headers installed), you can
 build the D3D10/11 UMD with `/p:AeroGpuUseWdkHeaders=0`, which compiles against

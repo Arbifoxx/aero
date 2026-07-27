@@ -31,8 +31,12 @@
 #include <d3dkmthk.h>
 #include <d3dumddi.h>
 #include <d3d10umddi.h>
+#if defined(__has_include) && __has_include(<d3d10_1umddi.h>)
 #include <d3d10_1umddi.h>
+#endif
+#if defined(__has_include) && __has_include(<d3d11umddi.h>)
 #include <d3d11umddi.h>
+#endif
 
 // MSVC-compatible printf format for size_t.
 #if defined(_MSC_VER)

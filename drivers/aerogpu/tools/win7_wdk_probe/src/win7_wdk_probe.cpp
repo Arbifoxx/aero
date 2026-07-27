@@ -7,9 +7,13 @@
 
 // Win7-era D3D UMD DDI headers (Win7 / WDDM 1.1).
 #include <d3d10umddi.h>
+#if defined(__has_include) && __has_include(<d3d10_1umddi.h>)
 #include <d3d10_1umddi.h>
+#endif
 #include <d3d11.h>
+#if defined(__has_include) && __has_include(<d3d11umddi.h>)
 #include <d3d11umddi.h>
+#endif
 #include <d3dumddi.h>
 #include <d3dkmthk.h>
 #include <dxgiddi.h>

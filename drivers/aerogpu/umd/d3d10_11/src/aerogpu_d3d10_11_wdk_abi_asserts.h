@@ -22,8 +22,14 @@
 #include <d3dkmthk.h>
 #include <d3dumddi.h>
 #include <d3d10umddi.h>
-#include <d3d10_1umddi.h>
-#include <d3d11umddi.h>
+#if defined(__has_include)
+  #if __has_include(<d3d10_1umddi.h>)
+    #include <d3d10_1umddi.h>
+  #endif
+  #if __has_include(<d3d11umddi.h>)
+    #include <d3d11umddi.h>
+  #endif
+#endif
 
 // -----------------------------------------------------------------------------
 // Compile-time assertion (C/C++, C++03-safe)

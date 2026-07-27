@@ -81,15 +81,23 @@
   // directories are on the compiler include path (Visual Studio/Build Tools
   // normally configures this automatically).
   #if defined(__has_include)
-    #if !__has_include(<d3d10umddi.h>) || !__has_include(<d3d10_1umddi.h>) || !__has_include(<d3d11umddi.h>) || !__has_include(<d3dumddi.h>)
-      #error "AEROGPU_UMD_USE_WDK_HEADERS=1 but required D3D DDI headers were not found. Install the Windows Driver Kit (WDK) (Windows Kits) so d3d10umddi.h/d3d11umddi.h are available."
+    #if !__has_include(<d3d10umddi.h>) || !__has_include(<d3dumddi.h>) || !__has_include(<d3dkmthk.h>)
+      #error "AEROGPU_UMD_USE_WDK_HEADERS=1 but required D3D DDI headers were not found. Install the Windows Driver Kit (WDK) (Windows Kits) so d3d10umddi.h/d3dumddi.h/d3dkmthk.h are available."
     #endif
   #endif
   #include <d3dkmthk.h>
   #include <d3dumddi.h>
   #include <d3d10umddi.h>
-  #include <d3d10_1umddi.h>
-  #include <d3d11umddi.h>
+  // Older WDKs split the D3D10.1 and D3D11 declarations into separate
+  // headers. Modern WDKs consolidate those interfaces into d3d10umddi.h.
+  #if defined(__has_include)
+    #if __has_include(<d3d10_1umddi.h>)
+      #include <d3d10_1umddi.h>
+    #endif
+    #if __has_include(<d3d11umddi.h>)
+      #include <d3d11umddi.h>
+    #endif
+  #endif
 #else
 
 // "Runtime" handle types (opaque to the driver).
