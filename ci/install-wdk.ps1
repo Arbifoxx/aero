@@ -56,7 +56,7 @@ if ($null -ne $vsDevCmd -and -not [string]::IsNullOrWhiteSpace($vsDevCmd)) {
   Write-ToolchainLog -Level WARN -Message 'Visual Studio developer environment batch files (VsDevCmd.bat / vcvarsall.bat) were not found. MSBuild may still work, but if driver builds fail to locate CL/Link, install Visual Studio Build Tools.'
 }
 
-$kitToolchain = Ensure-WindowsKitToolchain -PreferredWdkWingetId 'Microsoft.WindowsWDK' -PreferredWdkKitVersion '10.0.22621.0'
+$kitToolchain = Ensure-WindowsKitToolchain -PreferredWdkWingetId 'Microsoft.WindowsWDK' -PreferredWdkKitVersion '10.0.19041.0'
 
 if ($null -eq $kitToolchain.StampInfExe -or [string]::IsNullOrWhiteSpace($kitToolchain.StampInfExe)) {
   Write-ToolchainLog -Level WARN -Message 'stampinf.exe was not found. This tool is optional, but strongly recommended for driver packaging.'

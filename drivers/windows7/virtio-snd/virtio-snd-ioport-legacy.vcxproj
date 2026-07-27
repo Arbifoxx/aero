@@ -24,7 +24,7 @@
     <ProjectGuid>{E7DFB1F9-9C19-4D93-A1E4-5D0CF6A96C1B}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>virtiosnd_ioport</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.19041.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

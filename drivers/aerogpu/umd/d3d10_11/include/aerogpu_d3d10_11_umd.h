@@ -29,6 +29,9 @@
     #define NOMINMAX 1
   #endif
   #include <windows.h>
+  // d3dkmthk.h exposes user-mode entrypoints returning NTSTATUS. windows.h
+  // does not define that type for desktop applications; winternl.h does.
+  #include <winternl.h>
   #define AEROGPU_APIENTRY __stdcall
   #define AEROGPU_UMD_EXPORT __declspec(dllexport)
 #else

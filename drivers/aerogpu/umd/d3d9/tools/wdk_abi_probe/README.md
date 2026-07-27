@@ -117,7 +117,7 @@ The Win7 driver MSBuild project enables strict ABI enforcement by including:
 If you update the WDK/headers/toolchain and the build starts failing due to ABI drift, regenerate the expected header like this:
 
 1. Ensure you are using the same WDK header set as CI.
-   - CI installs the WDK via `ci/install-wdk.ps1` (currently pinned to WDK `10.0.22621.0`).
+   - CI installs the WDK via `ci/install-wdk.ps1` (currently pinned to WDK `10.0.19041.0` for Windows 7 support).
 2. Build and run this probe for **both** architectures and capture the output:
    - x86: `d3d9_wdk_abi_probe_x86.exe > out_x86.txt`
    - x64: `d3d9_wdk_abi_probe_x64.exe > out_x64.txt`

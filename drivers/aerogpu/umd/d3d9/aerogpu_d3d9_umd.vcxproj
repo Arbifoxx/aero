@@ -23,7 +23,7 @@
     <ProjectGuid>{5F7C8B24-8F96-4C3C-9D5C-A6E3C5E2BBE4}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>aerogpu_d3d9_umd</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.19041.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -96,14 +96,14 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <PreprocessorDefinitions>_WINDLL;_USRDLL;_WIN32_WINNT=0x0601;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>AEROGPU_UMD_USE_WDK_HEADERS=$(AeroGpuUseWdkHeaders);_WINDLL;_USRDLL;_WIN32_WINNT=0x0601;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\..\protocol;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
 
   <ItemDefinitionGroup>
     <ClCompile>
-      <PreprocessorDefinitions Condition="'$(AeroGpuUseWdkHeaders)'=='1'">AEROGPU_UMD_USE_WDK_HEADERS=1;AEROGPU_D3D9_WDK_ABI_ENFORCE_EXPECTED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(AeroGpuUseWdkHeaders)'=='1'">AEROGPU_D3D9_WDK_ABI_ENFORCE_EXPECTED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories Condition="'$(AeroGpuUseWdkHeaders)'=='1' and '$(AeroGpuWdkRoot)'!=''">$(AeroGpuWdkRoot)\inc\api;$(AeroGpuWdkRoot)\inc\ddk;$(AeroGpuWdkRoot)\inc\crt;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>

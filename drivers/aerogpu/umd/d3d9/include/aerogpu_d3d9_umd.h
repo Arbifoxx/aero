@@ -203,9 +203,10 @@ typedef struct _LUID {
 
 #if defined(_WIN32) && defined(AEROGPU_UMD_USE_WDK_HEADERS) && AEROGPU_UMD_USE_WDK_HEADERS
   // WDK mode: compile against the real Win7 D3D9 UMD DDI headers.
+  #include <winternl.h>
   #include <d3dkmthk.h>
-  #include <d3d9caps.h>
   #include <d3d9types.h>
+  #include <d3d9caps.h>
   #include <d3dumddi.h>
   #include <d3d9umddi.h>
 #else
@@ -214,8 +215,8 @@ typedef struct _LUID {
   // Portable mode on Windows: rely on the Windows SDK for the classic D3D9 type
   // and capability definitions (e.g. D3DMATRIX/D3DCAPS9) so host-side tests can
   // compile without the WDK.
-  #include <d3d9caps.h>
   #include <d3d9types.h>
+  #include <d3d9caps.h>
 #endif
 
 #if !defined(_WIN32)

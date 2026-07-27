@@ -16,7 +16,7 @@
     <ProjectGuid>{C2A96A71-0289-414B-A163-B61216F80E0A}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>virtiosnd_modern_check</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.19041.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

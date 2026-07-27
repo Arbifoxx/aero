@@ -432,7 +432,7 @@ function Resolve-WindowsDriverKitBuildSupport {
   [CmdletBinding()]
   param(
     [Parameter()]
-    [string]$PreferredKitVersion = '10.0.22621.0'
+    [string]$PreferredKitVersion = '10.0.19041.0'
   )
 
   $kitsRoot = Get-WindowsKitsRoot
@@ -1012,11 +1012,11 @@ function Ensure-WindowsKitToolchain {
     [Parameter()]
     [string]$PreferredWdkWingetId = 'Microsoft.WindowsWDK',
     [Parameter()]
-    [string]$PreferredWdkKitVersion = '10.0.22621.0',
+    [string]$PreferredWdkKitVersion = '10.0.19041.0',
     [Parameter()]
-    [string]$PreferredSdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2311806',
+    [string]$PreferredSdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2311805',
     [Parameter()]
-    [string]$PreferredWdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2330411',
+    [string]$PreferredWdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2342425',
     [Parameter()]
     [string]$LegacyWin7KitVersion = '10.0.19041.0',
     [Parameter()]

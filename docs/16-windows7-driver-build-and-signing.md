@@ -60,10 +60,13 @@ Not every Windows Kits / WDK release has historically accepted older `/os:` toke
 
 ### Pinned and legacy Windows Kits
 
-CI intentionally uses a mixed toolchain:
+CI intentionally pins **Windows Kits 10.0.19041.0** for the headers, libraries,
+and build files. Microsoft designates this WDK line for Windows 7/8/8.1 driver
+development; newer WDKs reject `Windows7` as a target OS and therefore cannot
+compile these projects.
 
-- **Windows Kits 10.0.22621.0** provides the headers, libraries, and build files used to compile the drivers.
-- **Windows Kits 10.0.19041.0 Inf2Cat** provides the legacy `7_X86` and `7_X64` catalog targets.
+- The newest discovered **Inf2Cat** that accepts `7_X86` and `7_X64` is used;
+  the 19041 kit is installed as the compatible fallback.
 - **Visual Studio's Windows Driver Kit component** provides the
   `WindowsKernelModeDriver10.0` MSBuild platform toolset required by Visual
   Studio 2022 17.11 and newer. The provisioner verifies its Win32 and x64
