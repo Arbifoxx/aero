@@ -375,6 +375,18 @@ function Get-VsDriverProps {
   return (Resolve-ExistingPath -LiteralPath $driverProps.FullName)
 }
 
+function Get-VsInstallerSetupExe {
+  [CmdletBinding()]
+  param()
+
+  $candidate = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\setup.exe'
+  if (Test-Path -LiteralPath $candidate) {
+    return (Resolve-ExistingPath -LiteralPath $candidate)
+  }
+
+  return $null
+}
+
 function Resolve-WindowsDriverKitBuildSupport {
   [CmdletBinding()]
   param(
@@ -458,6 +470,191 @@ function Resolve-WindowsDriverKitBuildSupport {
   }
 
   return $null
+}
+
+function Get-WindowsKitPayloadState {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$KitVersion,
+    [switch]$RequireDriverPayload,
+    [switch]$RequireSdkTools
+  )
+
+  $missing = @()
+  $kitsRoot = Get-WindowsKitsRoot
+  if ([string]::IsNullOrWhiteSpace($kitsRoot)) {
+    return [pscustomobject]@{
+      Ready = $false
+      Missing = @('Windows Kits installation root')
+    }
+  }
+
+  $kit10Root = Join-Path $kitsRoot '10'
+  $versionIncludeRoot = Join-Path $kit10Root (Join-Path 'Include' $KitVersion)
+  $versionBuildRoot = Join-Path $kit10Root (Join-Path 'build' $KitVersion)
+  $versionBinRoot = Join-Path $kit10Root (Join-Path 'bin' $KitVersion)
+
+  if ($RequireDriverPayload) {
+    $requiredPaths = @(
+      (Join-Path $versionIncludeRoot 'km\ntddk.h'),
+      (Join-Path $versionIncludeRoot 'km\ndis.h'),
+      (Join-Path $versionBuildRoot 'WindowsDriver.Common.props'),
+      (Join-Path $versionBuildRoot 'WindowsDriver.Default.props')
+    )
+    foreach ($path in $requiredPaths) {
+      if (-not (Test-Path -LiteralPath $path)) {
+        $missing += $path
+      }
+    }
+
+    foreach ($header in @('d3d10umddi.h', 'd3d10_1umddi.h', 'd3d11umddi.h', 'd3dumddi.h', 'd3dkmthk.h')) {
+      $found = $false
+      foreach ($includeKind in @('um', 'shared')) {
+        if (Test-Path -LiteralPath (Join-Path $versionIncludeRoot (Join-Path $includeKind $header))) {
+          $found = $true
+          break
+        }
+      }
+      if (-not $found) {
+        $missing += (Join-Path $versionIncludeRoot "<um|shared>\$header")
+      }
+    }
+
+    if ($null -eq (Find-KitTool -BinDir $versionBinRoot -ToolName 'Inf2Cat.exe' -Architectures @('x64', 'x86'))) {
+      $missing += (Join-Path $versionBinRoot '<x64|x86>\Inf2Cat.exe')
+    }
+    if ($null -eq (Find-KitTool -BinDir $versionBinRoot -ToolName 'stampinf.exe' -Architectures @('x64', 'x86'))) {
+      $missing += (Join-Path $versionBinRoot '<x64|x86>\stampinf.exe')
+    }
+  }
+
+  if ($RequireSdkTools) {
+    if ($null -eq (Find-KitTool -BinDir $versionBinRoot -ToolName 'signtool.exe' -Architectures @('x64', 'x86'))) {
+      $missing += (Join-Path $versionBinRoot '<x64|x86>\signtool.exe')
+    }
+  }
+
+  return [pscustomobject]@{
+    Ready = ($missing.Count -eq 0)
+    Missing = @($missing)
+  }
+}
+
+function Wait-WindowsKitPayload {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$KitVersion,
+    [switch]$RequireDriverPayload,
+    [switch]$RequireSdkTools,
+    [int]$TimeoutSeconds = 600
+  )
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $pollCount = 0
+  do {
+    $state = Get-WindowsKitPayloadState `
+      -KitVersion $KitVersion `
+      -RequireDriverPayload:$RequireDriverPayload `
+      -RequireSdkTools:$RequireSdkTools
+    if ($state.Ready) {
+      Write-ToolchainLog -Message "Windows Kit $KitVersion payload is ready."
+      return
+    }
+
+    if (($pollCount % 6) -eq 0) {
+      Write-ToolchainLog -Level WARN -Message "Waiting for the detached Windows Kit $KitVersion installation to finish; missing $($state.Missing.Count) item(s)."
+    }
+    $pollCount += 1
+    Start-Sleep -Seconds 5
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  $missingText = ($state.Missing | ForEach-Object { "  - $_" }) -join "`n"
+  throw @"
+Timed out waiting for the Windows Kit $KitVersion payload after $TimeoutSeconds seconds.
+
+Still missing:
+$missingText
+"@
+}
+
+function Install-VsDriverKitComponent {
+  [CmdletBinding()]
+  param()
+
+  $setupExe = Get-VsInstallerSetupExe
+  $vsInstallPath = Get-VsInstallationPath
+  if ([string]::IsNullOrWhiteSpace($setupExe) -or [string]::IsNullOrWhiteSpace($vsInstallPath)) {
+    throw 'Visual Studio Installer setup.exe or the Visual Studio installation path could not be resolved.'
+  }
+
+  Invoke-ExternalCommand `
+    -FilePath $setupExe `
+    -Arguments @(
+      'modify',
+      '--installPath', $vsInstallPath,
+      '--add', 'Component.Microsoft.Windows.DriverKit',
+      '--quiet',
+      '--norestart'
+    ) `
+    -AcceptedExitCodes @(0, 1641, 3010) `
+    -FailureHint @"
+Visual Studio 2022 version 17.11 and newer package WDK MSBuild integration as the
+Component.Microsoft.Windows.DriverKit individual component.
+"@
+}
+
+function Wait-VsDriverKitIntegration {
+  [CmdletBinding()]
+  param(
+    [int]$TimeoutSeconds = 600
+  )
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $pollCount = 0
+  do {
+    $driverProps = Get-VsDriverProps
+    if (-not [string]::IsNullOrWhiteSpace($driverProps)) {
+      Write-ToolchainLog -Message "Visual Studio WDK integration is ready: $driverProps"
+      return
+    }
+    if (($pollCount % 6) -eq 0) {
+      Write-ToolchainLog -Level WARN -Message 'Waiting for Visual Studio WDK integration (Driver.props)...'
+    }
+    $pollCount += 1
+    Start-Sleep -Seconds 5
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  throw "Timed out waiting for Visual Studio WDK integration (Driver.props) after $TimeoutSeconds seconds."
+}
+
+function Wait-Win7Inf2Cat {
+  [CmdletBinding()]
+  param(
+    [int]$TimeoutSeconds = 600
+  )
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $pollCount = 0
+  do {
+    $inf2cat = Resolve-WindowsKitTool `
+      -ToolName 'Inf2Cat.exe' `
+      -Architectures @('x64', 'x86') `
+      -KitVersions @('10', '8.1') `
+      -RequireWin7Inf2Cat
+    if ($null -ne $inf2cat) {
+      Write-ToolchainLog -Message "Windows 7-capable Inf2Cat is ready: $($inf2cat.Exe)"
+      return
+    }
+    if (($pollCount % 6) -eq 0) {
+      Write-ToolchainLog -Level WARN -Message 'Waiting for the Windows 7-capable Inf2Cat installation to finish...'
+    }
+    $pollCount += 1
+    Start-Sleep -Seconds 5
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  throw "Timed out waiting for an Inf2Cat.exe that supports 7_X86 and 7_X64 after $TimeoutSeconds seconds."
 }
 
 function Get-WingetExe {
@@ -779,7 +976,13 @@ function Ensure-WindowsKitToolchain {
     [Parameter()]
     [string]$PreferredSdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2311806',
     [Parameter()]
-    [string]$PreferredWdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2330411'
+    [string]$PreferredWdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2330411',
+    [Parameter()]
+    [string]$LegacyWin7KitVersion = '10.0.19041.0',
+    [Parameter()]
+    [string]$LegacyWin7SdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2311805',
+    [Parameter()]
+    [string]$LegacyWin7WdkBootstrapUri = 'https://go.microsoft.com/fwlink/?linkid=2342425'
   )
 
   $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
@@ -798,8 +1001,8 @@ function Ensure-WindowsKitToolchain {
   $needsSdk = ($null -eq $signtool -or $needsDriverBuildSupport)
 
   $missing = @()
-  if ($needsWdk) { $missing += 'Inf2Cat.exe (WDK)' }
-  if ($needsSdk) { $missing += 'signtool.exe (Windows SDK)' }
+  if ($null -eq $inf2cat) { $missing += 'Inf2Cat.exe with Windows 7 catalog targets (WDK)' }
+  if ($null -eq $signtool) { $missing += 'signtool.exe (Windows SDK)' }
   if ($needsDriverBuildSupport) { $missing += "complete WDK build support (headers + MSBuild integration for $PreferredWdkKitVersion)" }
   $missing = @($missing | Select-Object -Unique)
 
@@ -918,6 +1121,41 @@ Remediation:
     Write-ToolchainLog -Level WARN -Message "Official Microsoft SDK/WDK bootstrapper install attempt failed: $($_.Exception.Message)"
   }
 
+  if ($needsSdk -or $needsWdk) {
+    Wait-WindowsKitPayload `
+      -KitVersion $PreferredWdkKitVersion `
+      -RequireDriverPayload:$needsWdk `
+      -RequireSdkTools:$needsSdk
+  }
+
+  if ([string]::IsNullOrWhiteSpace((Get-VsDriverProps))) {
+    Write-ToolchainLog -Message 'Installing the Visual Studio Windows Driver Kit component required by VS 2022 17.11 and newer...'
+    Install-VsDriverKitComponent
+    Wait-VsDriverKitIntegration
+  }
+
+  $win7Inf2Cat = Resolve-WindowsKitTool `
+    -ToolName 'Inf2Cat.exe' `
+    -Architectures @('x64', 'x86') `
+    -KitVersions @('10', '8.1') `
+    -RequireWin7Inf2Cat
+  if ($null -eq $win7Inf2Cat) {
+    Write-ToolchainLog -Level WARN -Message "The installed modern WDK does not provide Windows 7 catalog targets. Installing Microsoft's supported legacy Windows 7 kit line ($LegacyWin7KitVersion) for Inf2Cat..."
+
+    Install-MicrosoftKitBootstrapper `
+      -Uri $LegacyWin7SdkBootstrapUri `
+      -FileName "winsdksetup-$LegacyWin7KitVersion.exe" `
+      -DisplayName "Windows SDK $LegacyWin7KitVersion" `
+      -DownloadDirectory $env:WDK_DOWNLOAD_CACHE
+    Install-MicrosoftKitBootstrapper `
+      -Uri $LegacyWin7WdkBootstrapUri `
+      -FileName "wdksetup-$LegacyWin7KitVersion.exe" `
+      -DisplayName "Windows Driver Kit (WDK) $LegacyWin7KitVersion" `
+      -DownloadDirectory $env:WDK_DOWNLOAD_CACHE
+
+    Wait-Win7Inf2Cat
+  }
+
   $toolchain = Resolve-WindowsKitToolchain -RequireWin7Inf2Cat
   $driverBuildSupport = Resolve-WindowsDriverKitBuildSupport -PreferredKitVersion $PreferredWdkKitVersion
   if ($null -ne $toolchain -and $null -ne $driverBuildSupport) {
@@ -929,7 +1167,7 @@ Remediation:
 Windows driver toolchain tooling is still missing after installation attempts.
 
 Expected tools:
-  - Inf2Cat.exe (WDK; must support /os:7_X86,7_X64)
+  - Inf2Cat.exe from the $LegacyWin7KitVersion kit line (must support /os:7_X86,7_X64)
   - signtool.exe (Windows SDK)
   - WDK kernel/DDI headers and Visual Studio driver build integration for $PreferredWdkKitVersion
 

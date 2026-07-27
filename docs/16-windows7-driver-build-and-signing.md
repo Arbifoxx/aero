@@ -58,13 +58,15 @@ Inf2Cat /os:7_X86,7_X64
 
 Not every Windows Kits / WDK release has historically accepted older `/os:` tokens, and CI runner images can change over time. A failing catalog-generation step is easy to miss until late in the build pipeline, so we validate it explicitly.
 
-### Pinned Windows Kits version
+### Pinned and legacy Windows Kits
 
-CI pins the Windows Kits toolchain to:
+CI intentionally uses a mixed toolchain:
 
-- **Windows Kits 10.0.22621.0** (Windows 11 / Windows 10 22H2-era toolset)
+- **Windows Kits 10.0.22621.0** provides the headers, libraries, and build files used to compile the drivers.
+- **Windows Kits 10.0.19041.0 Inf2Cat** provides the legacy `7_X86` and `7_X64` catalog targets.
+- **Visual Studio's Windows Driver Kit component** provides the MSBuild integration required by Visual Studio 2022 17.11 and newer.
 
-The pin is implemented in `ci/install-wdk.ps1` (which installs the Windows SDK/WDK via `winget` on CI if needed) and verified by `ci/validate-toolchain.ps1`.
+The selection is implemented in `ci/install-wdk.ps1`, using Microsoft-signed standalone kit installers when the runner does not provide `winget`, and verified by `ci/validate-toolchain.ps1`.
 
 ### Toolchain bootstrap (`ci/install-wdk.ps1`)
 
